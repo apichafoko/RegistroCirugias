@@ -1,0 +1,88 @@
+using Telegram.Bot;
+using RegistroCx.Models;
+using RegistroCx.Helpers;
+
+namespace RegistroCx.Services.Flow;
+
+public static class FlowValidationHelper
+{
+    public static async Task<bool> TryConfirmation(ITelegramBotClient bot, Appointment appt, long chatId, CancellationToken ct)
+    {
+        if (appt.FechaHora == null || appt.Lugar == null || appt.Cirujano == null ||
+            appt.Cirugia == null || appt.Cantidad == null || appt.Anestesiologo == null)
+            return false;
+
+        var (okFecha, err) = FechasHelper.ValidarFechaCirugia(appt.FechaHora, DateTime.Now);
+        if (!okFecha)
+        {
+            await bot.SendMessage(chatId, err!, cancellationToken: ct);
+            return true;
+        }
+
+        var resumen = BuildConfirmationSummary(appt);
+        appt.ConfirmacionPendiente = true;
+        await bot.SendMessage(chatId, resumen, cancellationToken: ct);
+        return true;
+    }
+
+    public static async Task<bool> RequestMissingField(ITelegramBotClient bot, Appointment appt, long chatId, CancellationToken ct)
+    {
+        var faltantes = GetMissingFields(appt);
+        if (faltantes.Count == 0) return false;
+
+        var primero = faltantes[0];
+        appt.CampoQueFalta = primero;
+        appt.IntentosCampoActual = 0;
+
+        var mensaje = BuildMissingFieldMessage(appt, primero);
+        await bot.SendMessage(chatId, mensaje, cancellationToken: ct);
+        return true;
+    }
+
+    private static string BuildConfirmationSummary(Appointment appt)
+    {
+        return "¿Confirmás estos datos?\n" +
+               $"• Fecha y hora: {appt.FechaHora:dd/MM/yyyy HH:mm}\n" +
+               $"• Lugar: {appt.Lugar}\n" +
+               $"• Cirujano: {appt.Cirujano}\n" +
+               $"• Cirugía: {appt.Cirugia}\n" +
+               $"• Cantidad: {appt.Cantidad}\n" +
+               $"• Anestesiólogo: {appt.Anestesiologo}\n" +
+               "Respondé 'sí' / 'ok' para confirmar, o 'no' para corregir.";
+    }
+
+    private static List<Appointment.CampoPendiente> GetMissingFields(Appointment appt)
+    {
+        var faltantes = new List<Appointment.CampoPendiente>();
+
+        if (appt.FechaHora == null)
+        {
+            faltantes.Add(Appointment.CampoPendiente.FechaHora);
+        }
+        if (appt.Lugar == null) faltantes.Add(Appointment.CampoPendiente.Lugar);
+        if (appt.Cirujano == null) faltantes.Add(Appointment.CampoPendiente.Cirujano);
+        if (appt.Cirugia == null) faltantes.Add(Appointment.CampoPendiente.Cirugia);
+        if (appt.Cantidad == null) faltantes.Add(Appointment.CampoPendiente.Cantidad);
+        if (appt.Anestesiologo == null) faltantes.Add(Appointment.CampoPendiente.Anestesiologo);
+
+        return faltantes;
+    }
+
+    private static string BuildMissingFieldMessage(Appointment appt, Appointment.CampoPendiente campo)
+    {
+        if (campo == Appointment.CampoPendiente.FechaHora)
+        {
+            if (appt.TieneFechaPeroNoHora())
+            {
+                var fechaStr = $"{appt.DiaExtraido:D2}/{appt.MesExtraido:D2}";
+                return $"Tengo la fecha ({fechaStr}) pero me falta la hora. ¿A qué hora? (ej: 14hs, 16:30)";
+            }
+            else
+            {
+                return "Me falta la fecha y hora. Indicá el valor (ej: 08/08 14hs, mañana 16:00).";
+            }
+        }
+
+        return $"Me falta {CamposExistentes.NombreHumanoCampo(campo)}. Indicá el valor.";
+    }
+}
