@@ -68,6 +68,18 @@ public static class ServiceCollectionExtensions
             return new UserProfileRepository(dbOptions.Value.ConnectionString);
         });
         
+        services.AddScoped<IAppointmentRepository>(provider =>
+        {
+            var dbOptions = provider.GetRequiredService<Microsoft.Extensions.Options.IOptions<DatabaseOptions>>();
+            return new AppointmentRepository(dbOptions.Value.ConnectionString);
+        });
+        
+        services.AddScoped<IAnesthesiologistRepository>(provider =>
+        {
+            var dbOptions = provider.GetRequiredService<Microsoft.Extensions.Options.IOptions<DatabaseOptions>>();
+            return new AnesthesiologistRepository(dbOptions.Value.ConnectionString);
+        });
+        
         services.AddScoped<RegistroCx.Helpers._0Auth.IGoogleOAuthService>(provider =>
         {
             var googleOptions = provider.GetRequiredService<Microsoft.Extensions.Options.IOptions<GoogleOAuthOptions>>().Value;
@@ -84,7 +96,15 @@ public static class ServiceCollectionExtensions
         
         // Diccionario compartido para mantener estado entre requests
         services.AddSingleton<Dictionary<long, RegistroCx.Models.Appointment>>();
+        services.AddScoped<CalendarSyncService>();
         services.AddScoped<CirugiaFlowService>();
+        services.AddScoped<AppointmentConfirmationService>();
+        services.AddScoped<IGoogleCalendarService>(provider =>
+        {
+            var userRepo = provider.GetRequiredService<IUserProfileRepository>();
+            var oauthService = provider.GetRequiredService<RegistroCx.Helpers._0Auth.IGoogleOAuthService>();
+            return new GoogleCalendarService(userRepo, oauthService);
+        });
 
         // Background services
         services.AddHostedService<TelegramBotService>();

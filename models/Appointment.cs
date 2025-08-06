@@ -3,6 +3,7 @@ namespace RegistroCx.Models;
 
 public class Appointment
 {
+    public long Id { get; set; }
     public long ChatId { get; set; }
     public DateTime? Fecha { get; set; }
     public string? Lugar { get; set; }
@@ -13,6 +14,10 @@ public class Appointment
     public string? Notas { get; set; }
     public bool ConfirmacionPendiente { get; set; }
     
+    // Para tracking de sincronización con Google Calendar
+    public string? CalendarEventId { get; set; }
+    public DateTime? CalendarSyncedAt { get; set; }
+    
     public enum CampoPendiente
     {
         Ninguno,
@@ -22,7 +27,8 @@ public class Appointment
         Cantidad,
         Anestesiologo,
         Cirugia,
-        EsperandoNombreCampo
+        EsperandoNombreCampo,
+        EsperandoEmailAnestesiologo
     }
     
     public CampoPendiente CampoQueFalta { get; set; } = CampoPendiente.Ninguno;
@@ -30,6 +36,10 @@ public class Appointment
     public int IntentosCampoActual { get; set; } = 0;
     public const int MaxIntentosCampo = 3;
     public List<string> HistoricoInputs { get; set; } = new();
+
+    // Campos para manejo de email de anestesiólogo
+    public string? PendingEventId { get; set; }
+    public string? PendingAnesthesiologistName { get; set; }
 
     // Propiedad para compatibilidad
     public DateTime? FechaHora 

@@ -1,6 +1,7 @@
 using System;
 using Telegram.Bot;
 using Telegram.Bot.Exceptions;
+using Telegram.Bot.Types.Enums;
 using Telegram.Bot.Types.ReplyMarkups;
 
 namespace RegistroCx.ProgramServices.Services.Telegram;
@@ -22,7 +23,7 @@ public static class MessageSender
         {
             try
             {
-                await Bot.SendMessage(chatId, message, replyMarkup: replyMarkup, cancellationToken: cancellationToken);
+                await Bot.SendMessage(chatId, message, parseMode: ParseMode.Markdown, replyMarkup: replyMarkup, cancellationToken: cancellationToken);
                 
                 return;
             }

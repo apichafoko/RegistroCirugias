@@ -2,6 +2,8 @@ using Telegram.Bot;
 using RegistroCx.Models;
 using RegistroCx.Services.Extraction;
 using RegistroCx.Services.Flow;
+using RegistroCx.Helpers._0Auth;
+using RegistroCx.Services.Repositories;
 
 namespace RegistroCx.Services;
 
@@ -50,13 +52,21 @@ public class CirugiaFlowService
     private readonly FlowMessageHandler _messageHandler;
     private readonly FlowWizardHandler _wizardHandler;
     private readonly FlowLLMProcessor _llmProcessor;
+    private readonly AppointmentConfirmationService _confirmationService;
 
-    public CirugiaFlowService(LLMOpenAIAssistant llm, Dictionary<long, Appointment> pending)
+    public CirugiaFlowService(
+        LLMOpenAIAssistant llm, 
+        Dictionary<long, Appointment> pending,
+        AppointmentConfirmationService confirmationService,
+        IGoogleOAuthService oauthService,
+        IUserProfileRepository userRepo,
+        CalendarSyncService calendarSync)
     {
         _llm = llm;
         _pending = pending;
+        _confirmationService = confirmationService;
         _stateManager = new FlowStateManager(_pending);
-        _messageHandler = new FlowMessageHandler();
+        _messageHandler = new FlowMessageHandler(oauthService, userRepo, calendarSync);
         _wizardHandler = new FlowWizardHandler();
         _llmProcessor = new FlowLLMProcessor(llm);
     }
@@ -74,13 +84,15 @@ public class CirugiaFlowService
         var appt = _stateManager.GetOrCreateAppointment(chatId);
         appt.HistoricoInputs.Add(rawText);
 
-        // Manejar confirmación
-        if (await _messageHandler.HandleConfirmationAsync(bot, appt, rawText, chatId, ct))
+        // Manejar captura de email del anestesiólogo
+        if (await HandleEmailCapture(bot, appt, rawText, chatId, ct))
         {
-            if (appt.ConfirmacionPendiente == false && rawText.Trim().ToLowerInvariant() is "si" or "sí" or "ok" or "dale" or "confirmo" or "confirmar")
-            {
-                _stateManager.ClearContext(chatId);
-            }
+            return;
+        }
+
+        // Manejar confirmación
+        if (await HandleConfirmationFlow(bot, appt, rawText, chatId, ct))
+        {
             return;
         }
 
@@ -111,6 +123,35 @@ public class CirugiaFlowService
         Console.WriteLine("[FLOW] Going to LLM - no other handler processed the message");
         // Procesar con LLM para casos nuevos
         await _llmProcessor.ProcessWithLLM(bot, appt, rawText, chatId, ct);
+    }
+
+    private async Task<bool> HandleConfirmationFlow(ITelegramBotClient bot, Appointment appt, string rawText, long chatId, CancellationToken ct)
+    {
+        // Primero dejar que el handler maneje la lógica básica de confirmación
+        if (await _messageHandler.HandleConfirmationAsync(bot, appt, rawText, chatId, ct))
+        {
+            // Si era una confirmación positiva y ya no está pendiente, procesar la confirmación completa
+            if (appt.ConfirmacionPendiente == false && rawText.Trim().ToLowerInvariant() is "si" or "sí" or "ok" or "dale" or "confirmo" or "confirmar")
+            {
+                // Procesar la confirmación completa (DB, Calendar, Email)
+                await _confirmationService.ProcessConfirmationAsync(bot, appt, chatId, ct);
+                
+                // Limpiar el contexto
+                _stateManager.ClearContext(chatId);
+            }
+            return true;
+        }
+        return false;
+    }
+
+    private async Task<bool> HandleEmailCapture(ITelegramBotClient bot, Appointment appt, string rawText, long chatId, CancellationToken ct)
+    {
+        if (appt.CampoQueFalta == Appointment.CampoPendiente.EsperandoEmailAnestesiologo)
+        {
+            Console.WriteLine($"[FLOW] Handling email capture for: {rawText}");
+            return await _confirmationService.HandleEmailResponse(bot, appt, rawText, chatId, ct);
+        }
+        return false;
     }
 
     // Métodos públicos para gestión

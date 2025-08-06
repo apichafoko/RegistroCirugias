@@ -2,14 +2,31 @@ using Telegram.Bot;
 using RegistroCx.Models;
 using RegistroCx.Helpers;
 using RegistroCx.ProgramServices.Services.Telegram;
+using RegistroCx.Services;
+using RegistroCx.Helpers._0Auth;
+using RegistroCx.Services.Repositories;
 
 namespace RegistroCx.Services.Flow;
 
 public class FlowMessageHandler
 {
+    private readonly IGoogleOAuthService _oauthService;
+    private readonly IUserProfileRepository _userRepo;
+    private readonly CalendarSyncService _calendarSync;
+
+    public FlowMessageHandler(
+        IGoogleOAuthService oauthService, 
+        IUserProfileRepository userRepo, 
+        CalendarSyncService calendarSync)
+    {
+        _oauthService = oauthService;
+        _userRepo = userRepo;
+        _calendarSync = calendarSync;
+    }
     public async Task<bool> HandleSpecialCommandsAsync(ITelegramBotClient bot, long chatId, string rawText, CancellationToken ct)
     {
         var textLower = rawText.Trim().ToLowerInvariant();
+        
         if (textLower is "/start" or "/reset" or "/reiniciar" or "reiniciar" or "cancelar" or "empezar de nuevo")
         {
             await MessageSender.SendWithRetry(chatId,
@@ -17,7 +34,43 @@ public class FlowMessageHandler
                 cancellationToken: ct);
             return true;
         }
+
+        if (textLower is "/autorizar" or "autorizar")
+        {
+            await HandleAuthorizationCommand(bot, chatId, ct);
+            return true;
+        }
+
         return false;
+    }
+
+    private async Task HandleAuthorizationCommand(ITelegramBotClient bot, long chatId, CancellationToken ct)
+    {
+        try
+        {
+            Console.WriteLine($"[AUTHORIZATION] Starting authorization flow for chat {chatId}");
+
+            // Obtener o crear perfil del usuario
+            var userProfile = await _userRepo.GetOrCreateAsync(chatId, ct);
+
+            // Construir URL de autorización (reutilizar lógica existente del onboarding)
+            var authUrl = _oauthService.BuildAuthUrl(chatId, userProfile.GoogleEmail ?? "user@example.com");
+
+            await MessageSender.SendWithRetry(chatId,
+                "🔐 *Autorización de Google Calendar*\n\n" +
+                "Para poder crear eventos en tu calendario, necesito que me autorices el acceso a Google Calendar.\n\n" +
+                $"🔗 [HACER CLIC AQUÍ PARA AUTORIZAR]({authUrl})\n\n" +
+                "Una vez que completes la autorización, te avisaré y sincronizaré automáticamente todas tus cirugías pendientes.\n\n" +
+                "⚠️ _El enlace te llevará a una página segura de Google para autorizar el acceso._",
+                cancellationToken: ct);
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[AUTHORIZATION] Error starting authorization: {ex}");
+            await MessageSender.SendWithRetry(chatId,
+                "❌ Hubo un error al iniciar el proceso de autorización. Por favor, intenta nuevamente.",
+                cancellationToken: ct);
+        }
     }
 
     public async Task<bool> HandleConfirmationAsync(ITelegramBotClient bot, Appointment appt, string rawText, long chatId, CancellationToken ct)
@@ -37,9 +90,10 @@ public class FlowMessageHandler
                 return true;
             }
 
-            await MessageSender.SendWithRetry(chatId,
-                "✅ Confirmado. El evento fue creado en el calendario.",
-                cancellationToken: ct);
+            // Nota: El mensaje de confirmación se envía desde AppointmentConfirmationService
+            // await MessageSender.SendWithRetry(chatId,
+            //     "✅ Confirmado. El evento fue creado en el calendario.",
+            //     cancellationToken: ct);
             return true;
         }
         else if (lower.StartsWith("no") || lower.Contains("cambiar") || lower.Contains("correg"))
