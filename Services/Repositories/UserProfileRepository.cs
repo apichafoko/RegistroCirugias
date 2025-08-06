@@ -34,7 +34,7 @@ public class UserProfileRepository : IUserProfileRepository
             // leer parámetros de query
             var qp = System.Web.HttpUtility.ParseQueryString(uri.Query);
             if (qp["sslmode"] != null)
-                csb.SslMode = Enum.Parse<SslMode>(qp["sslmode"], ignoreCase: true);
+                csb.SslMode = Enum.Parse<SslMode>(qp["sslmode"]!, ignoreCase: true);
             
         }
         else

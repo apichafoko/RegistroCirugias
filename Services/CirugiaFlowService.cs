@@ -43,7 +43,7 @@ namespace RegistroCx.Services;
 public class CirugiaFlowService
 {
     private readonly LLMOpenAIAssistant _llm;
-    private readonly Dictionary<long, Appointment> _pending = new();
+    private readonly Dictionary<long, Appointment> _pending;
 
     // Helpers especializados
     private readonly FlowStateManager _stateManager;
@@ -51,9 +51,10 @@ public class CirugiaFlowService
     private readonly FlowWizardHandler _wizardHandler;
     private readonly FlowLLMProcessor _llmProcessor;
 
-    public CirugiaFlowService(LLMOpenAIAssistant llm)
+    public CirugiaFlowService(LLMOpenAIAssistant llm, Dictionary<long, Appointment> pending)
     {
         _llm = llm;
+        _pending = pending;
         _stateManager = new FlowStateManager(_pending);
         _messageHandler = new FlowMessageHandler();
         _wizardHandler = new FlowWizardHandler();
@@ -63,7 +64,7 @@ public class CirugiaFlowService
     public async Task HandleAsync(ITelegramBotClient bot, long chatId, string rawText, CancellationToken ct)
     {
         // Manejar comandos especiales
-        if (await _messageHandler.HandleSpecialCommands(bot, chatId, rawText, ct))
+        if (await _messageHandler.HandleSpecialCommandsAsync(bot, chatId, rawText, ct))
         {
             _stateManager.ClearContext(chatId);
             return;
@@ -74,7 +75,7 @@ public class CirugiaFlowService
         appt.HistoricoInputs.Add(rawText);
 
         // Manejar confirmación
-        if (await _messageHandler.HandleConfirmation(bot, appt, rawText, chatId, ct))
+        if (await _messageHandler.HandleConfirmationAsync(bot, appt, rawText, chatId, ct))
         {
             if (appt.ConfirmacionPendiente == false && rawText.Trim().ToLowerInvariant() is "si" or "sí" or "ok" or "dale" or "confirmo" or "confirmar")
             {
@@ -89,18 +90,25 @@ public class CirugiaFlowService
             return;
         }
 
+        Console.WriteLine($"[FLOW] Before wizard - CampoQueFalta={appt.CampoQueFalta}, ConfirmacionPendiente={appt.ConfirmacionPendiente}");
+        
         // Manejar wizard de campos
         if (await _wizardHandler.HandleFieldWizard(bot, appt, rawText, chatId, ct))
         {
+            Console.WriteLine("[FLOW] Wizard handled the message - returning");
             return;
         }
+        
+        Console.WriteLine("[FLOW] Wizard did not handle - checking direct changes");
 
         // Manejar cambios directos
         if (await _messageHandler.HandleDirectChanges(bot, appt, rawText, chatId, ct, _llmProcessor))
         {
+            Console.WriteLine("[FLOW] Direct changes handled - returning");
             return;
         }
 
+        Console.WriteLine("[FLOW] Going to LLM - no other handler processed the message");
         // Procesar con LLM para casos nuevos
         await _llmProcessor.ProcessWithLLM(bot, appt, rawText, chatId, ct);
     }

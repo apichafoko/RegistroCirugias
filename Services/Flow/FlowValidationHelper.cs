@@ -1,6 +1,7 @@
 using Telegram.Bot;
 using RegistroCx.Models;
 using RegistroCx.Helpers;
+using RegistroCx.ProgramServices.Services.Telegram;
 
 namespace RegistroCx.Services.Flow;
 
@@ -15,27 +16,35 @@ public static class FlowValidationHelper
         var (okFecha, err) = FechasHelper.ValidarFechaCirugia(appt.FechaHora, DateTime.Now);
         if (!okFecha)
         {
-            await bot.SendMessage(chatId, err!, cancellationToken: ct);
+            await MessageSender.SendWithRetry(chatId, err!, cancellationToken: ct);
             return true;
         }
 
         var resumen = BuildConfirmationSummary(appt);
         appt.ConfirmacionPendiente = true;
-        await bot.SendMessage(chatId, resumen, cancellationToken: ct);
+        await MessageSender.SendWithRetry(chatId, resumen, cancellationToken: ct);
         return true;
     }
 
     public static async Task<bool> RequestMissingField(ITelegramBotClient bot, Appointment appt, long chatId, CancellationToken ct)
     {
         var faltantes = GetMissingFields(appt);
-        if (faltantes.Count == 0) return false;
+        Console.WriteLine($"[VALIDATION] Missing fields count: {faltantes.Count}");
+        Console.WriteLine($"[VALIDATION] FechaHora={appt.FechaHora}, Lugar={appt.Lugar}, Cirujano={appt.Cirujano}, Cirugia={appt.Cirugia}, Cantidad={appt.Cantidad}, Anestesiologo={appt.Anestesiologo}");
+        
+        if (faltantes.Count == 0) 
+        {
+            Console.WriteLine("[VALIDATION] No missing fields - returning false");
+            return false;
+        }
 
         var primero = faltantes[0];
+        Console.WriteLine($"[VALIDATION] Setting CampoQueFalta to: {primero}");
         appt.CampoQueFalta = primero;
         appt.IntentosCampoActual = 0;
 
         var mensaje = BuildMissingFieldMessage(appt, primero);
-        await bot.SendMessage(chatId, mensaje, cancellationToken: ct);
+        await MessageSender.SendWithRetry(chatId, mensaje, cancellationToken: ct);
         return true;
     }
 

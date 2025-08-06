@@ -42,21 +42,21 @@ public static int? ExtractNumberFromText(string text)
 }
 
 // Implementaciones simples por regex; luego las mejoramos con LLM:
-public static string ExtractPlaceFromText(string text)
+public static string? ExtractPlaceFromText(string text)
 {
     // ej: "en Quirófano Central", "en sala 2", etc.
     var m = Regex.Match(text, @"\ben\s+([A-ZÁÉÍÓÚ][\w\s\-]+)");
     return m.Success ? m.Groups[1].Value.Trim() : null;
 }
 
-public static string ExtractCirujanoFromText(string text)
+public static string? ExtractCirujanoFromText(string text)
 {
     // ej: detecta "Dr. Pérez" o nombres propios
     var m = Regex.Match(text, @"\bDr\.?\s+([A-ZÁÉÍÓÚ][\w]+)");
     return m.Success ? "Dr. " + m.Groups[1].Value : null;
 }
 
-public static string ExtractAnestesioFromText(string text)
+public static string? ExtractAnestesioFromText(string text)
 {
     // por defecto dejamos vacío y preguntamos al final
     return null;

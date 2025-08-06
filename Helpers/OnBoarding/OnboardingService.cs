@@ -35,7 +35,7 @@ public class OnboardingService : IOnboardingService
         {
             if (profile.State == UserState.Ready)
             {
-                await bot.SendMessage(chatId,
+                MessageSender.SendWithRetry(chatId,
                     "Ya estás configurado ✅. Mandame una cirugía o escribí 'ayuda' para ejemplos.",
                     cancellationToken: ct);
             }
@@ -52,7 +52,7 @@ public class OnboardingService : IOnboardingService
         }
         if (EsComandoAyuda(rawText.Trim().ToLowerInvariant()))
         {
-            await bot.SendMessage(chatId, MensajeAyuda(), cancellationToken: ct);
+            MessageSender.SendWithRetry(chatId, MensajeAyuda(), cancellationToken: ct);
             return (true, profile);
         }
 
@@ -98,7 +98,7 @@ public class OnboardingService : IOnboardingService
                     // Ya lo obtuvimos (probablemente por contacto)
                     profile.State = UserState.NeedEmail;
                     await _repo.SaveAsync(profile, ct);
-                    await bot.SendMessage(chatId,
+                    MessageSender.SendWithRetry(chatId,
                         "Perfecto ✅. Ahora pasame tu email de Google (ej: nombre@gmail.com).",
                         cancellationToken: ct);
                     return (true, profile);
@@ -108,7 +108,7 @@ public class OnboardingService : IOnboardingService
                     profile.Phone = phoneManual;
                     profile.State = UserState.NeedEmail;
                     await _repo.SaveAsync(profile, ct);
-                    await bot.SendMessage(chatId,
+                    MessageSender.SendWithRetry(chatId,
                         "Perfecto ✅. Ahora pasame tu email de Google (ej: nombre@gmail.com).",
                         cancellationToken: ct);
                 }
@@ -124,13 +124,13 @@ public class OnboardingService : IOnboardingService
                     profile.GoogleEmail = rawText.Trim();
                     profile.State = UserState.NeedOAuth;
                     await _repo.SaveAsync(profile, ct);
-                    await bot.SendMessage(chatId,
+                    MessageSender.SendWithRetry(chatId,
                         "Genial ✅. Escribí *continuar* cuando quieras autorizar acceso a tu Google Calendar.",
                         cancellationToken: ct);
                 }
                 else
                 {
-                    await bot.SendMessage(chatId,
+                    MessageSender.SendWithRetry(chatId,
                         "Pasame un email de Google válido (ej: algo@gmail.com).",
                         cancellationToken: ct);
                 }
@@ -141,19 +141,19 @@ public class OnboardingService : IOnboardingService
                 {
                     if (string.IsNullOrWhiteSpace(profile.GoogleEmail))
                     {
-                        await bot.SendMessage(chatId, "Antes necesito tu email de Google.", cancellationToken: ct);
+                        MessageSender.SendWithRetry(chatId, "Antes necesito tu email de Google.", cancellationToken: ct);
                         return (true, profile);
                     }
 
                     /*
                     var url = _googleOAuth.BuildAuthUrl(chatId, profile.GoogleEmail);
-                    await bot.SendMessage(chatId,
+                    MessageSender.SendWithRetry(chatId,
                         "Abrí este enlace para autorizar acceso a tu Calendar:\n" + url +
                         "\nCuando finalices la autorización, volvé y escribí 'ok'.",
                         cancellationToken: ct);
                     return (true, profile);
                 }
-                await bot.SendMessage(chatId,
+                MessageSender.SendWithRetry(chatId,
                     "Escribí 'continuar' para generar el enlace de autorización.",
                     cancellationToken: ct);
                 return (true, profile);
@@ -167,20 +167,20 @@ public class OnboardingService : IOnboardingService
                     {
                         profile.State = UserState.Ready;
                         await _repo.SaveAsync(profile, ct);
-                        await bot.SendMessage(chatId,
+                        MessageSender.SendWithRetry(chatId,
                             "¡Listo! Autorización completada ✅. Ya podés registrar cirugías.",
                             cancellationToken: ct);
                     }
                     else
                     {
-                        await bot.SendMessage(chatId,
+                        MessageSender.SendWithRetry(chatId,
                             "Todavía no recibí la autorización. Asegurate de completar el flujo del enlace.",
                             cancellationToken: ct);
                     }
                 }
                 else
                 {
-                    await bot.SendMessage(chatId,
+                    MessageSender.SendWithRetry(chatId,
                         "Cuando termines la autorización en el navegador escribí 'ok'.",
                         cancellationToken: ct);
                 }
@@ -221,7 +221,7 @@ public class OnboardingService : IOnboardingService
             };
         }
 
-        await bot.SendMessage(chatId, texto, replyMarkup: reply, cancellationToken: ct);
+        MessageSender.SendWithRetry(chatId, texto, replyMarkup: reply, cancellationToken: ct);
     }
 
     private static async Task PedirTelefonoAsync(
@@ -244,7 +244,7 @@ public class OnboardingService : IOnboardingService
             OneTimeKeyboard = true
         };
 
-        await bot.SendMessage(chatId, msg, replyMarkup: replyKeyboard, cancellationToken: ct);
+        MessageSender.SendWithRetry(chatId, msg, replyMarkup: replyKeyboard, cancellationToken: ct);
     }
 
     private static bool TryExtractPhone(string input, out string phone)

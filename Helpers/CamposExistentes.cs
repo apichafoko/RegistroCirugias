@@ -228,10 +228,11 @@ public static class CamposExistentes
         var horaText = valor.Trim().ToLower()
             .Replace("hs", "").Replace("h", "").Trim();
 
-        // Formato HH:mm
-        if (horaText.Contains(":"))
+        // Formato HH:mm o HH.mm
+        if (horaText.Contains(":") || horaText.Contains("."))
         {
-            var partes = horaText.Split(':');
+            var separador = horaText.Contains(":") ? ':' : '.';
+            var partes = horaText.Split(separador);
             if (partes.Length == 2 &&
                 int.TryParse(partes[0], out hora) &&
                 int.TryParse(partes[1], out minutos) &&

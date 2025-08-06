@@ -2,6 +2,7 @@ using Telegram.Bot;
 using RegistroCx.Models;
 using RegistroCx.Helpers;
 using RegistroCx.Services.Extraction;
+using RegistroCx.ProgramServices.Services.Telegram;
 
 namespace RegistroCx.Services.Flow;
 
@@ -16,6 +17,9 @@ public class FlowLLMProcessor
 
     public async Task ProcessWithLLM(ITelegramBotClient bot, Appointment appt, string rawText, long chatId, CancellationToken ct)
     {
+        // Mostrar mensaje de procesamiento
+        await MessageSender.SendWithRetry(chatId, "⏳ Procesando...", cancellationToken: ct);
+        
         // Usar el context manager inteligente
         var (textoParaLLM, tipoOperacion) = LLMContextManager.CrearContextoInteligente(appt, rawText, DateTime.Today);
 
@@ -40,7 +44,7 @@ public class FlowLLMProcessor
 
         if (wasUpdated && fieldUpdated != Appointment.CampoPendiente.Ninguno)
         {
-            await bot.SendMessage(chatId,
+            await MessageSender.SendWithRetry(chatId,
                 CamposExistentes.GenerarMensajeActualizacion(fieldUpdated, newValue),
                 cancellationToken: ct);
 
@@ -50,7 +54,7 @@ public class FlowLLMProcessor
         }
         else
         {
-            await bot.SendMessage(chatId,
+            await MessageSender.SendWithRetry(chatId,
                 $"No pude interpretar '{inputOriginal}'. ¿Podés ser más específico?",
                 cancellationToken: ct);
         }
@@ -65,7 +69,7 @@ public class FlowLLMProcessor
         if (await FlowValidationHelper.RequestMissingField(bot, appt, chatId, ct)) return;
         if (await FlowValidationHelper.TryConfirmation(bot, appt, chatId, ct)) return;
 
-        await bot.SendMessage(chatId,
+        await MessageSender.SendWithRetry(chatId,
             "Enviá los datos que faltan (fecha/hora, lugar, cirujano, cirugía, cantidad, anestesiólogo).",
             cancellationToken: ct);
     }
@@ -102,6 +106,7 @@ public class FlowLLMProcessor
                     break;
 
                 case "cirugía":
+                case "cirugia":
                     var oldCirugia = appt.Cirugia;
                     appt.Cirugia = Capitalizador.CapitalizarSimple(value);
                     if (oldCirugia != appt.Cirugia)
@@ -121,7 +126,7 @@ public class FlowLLMProcessor
         if (dict.TryGetValue("cirujano", out var cirujano) && !string.IsNullOrWhiteSpace(cirujano))
             appt.Cirujano = Capitalizador.CapitalizarSimple(cirujano);
         
-        if (dict.TryGetValue("cirugía", out var cirugia) && !string.IsNullOrWhiteSpace(cirugia))
+        if ((dict.TryGetValue("cirugía", out var cirugia) || dict.TryGetValue("cirugia", out cirugia)) && !string.IsNullOrWhiteSpace(cirugia))
             appt.Cirugia = Capitalizador.CapitalizarSimple(cirugia);
         
         if (dict.TryGetValue("cantidad", out var q) && int.TryParse(q, out var n))

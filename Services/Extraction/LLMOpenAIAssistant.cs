@@ -95,7 +95,17 @@ namespace RegistroCx.Services.Extraction
                 throw new Exception("No se encontró 'output_text' en la respuesta.");
 
             // Ahora parsear ese JSON puro a Dictionary<string,string>
+            Console.WriteLine($"[LLM] Assistant text to parse: {assistantText.Trim()}");
             var dict = JSONExtractor.ParseLLMResponse(assistantText.Trim());
+
+            Console.WriteLine($"[LLM] Parsed dictionary count: {dict?.Count ?? 0}");
+            if (dict != null)
+            {
+                foreach (var kvp in dict)
+                {
+                    Console.WriteLine($"[LLM] Key: '{kvp.Key}', Value: '{kvp.Value}'");
+                }
+            }
 
             if (dict == null)
                 throw new Exception("Falló el parseo del JSON del assistant.");

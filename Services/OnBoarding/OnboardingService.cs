@@ -8,7 +8,8 @@ using Telegram.Bot.Types.ReplyMarkups;
 using RegistroCx.Domain;
 using RegistroCx.Services.Repositories;
 using RegistroCx.Services;  // SendMessage extension
-using RegistroCx.Helpers._0Auth; // IGoogleOAuthService
+using RegistroCx.Helpers._0Auth;
+using RegistroCx.ProgramServices.Services.Telegram; // IGoogleOAuthService
 
 namespace RegistroCx.Services.Onboarding
 {
@@ -56,7 +57,7 @@ namespace RegistroCx.Services.Onboarding
                 profile.Phone = NormalizarTelefono(phoneFromContact);
                 profile.State = UserState.NeedEmail;
                 await _repo.SaveAsync(profile, ct);
-                await bot.SendMessage(chatId,
+                await MessageSender.SendWithRetry(chatId,
                             "Perfecto ✅. Ahora pasame tu email de Google (ej: nombre@gmail.com).",
                             cancellationToken: ct);
                 return (true, profile);
@@ -73,7 +74,7 @@ namespace RegistroCx.Services.Onboarding
                         // Ya lo obtuvimos (probablemente por contacto)
                         profile.State = UserState.NeedEmail;
                         await _repo.SaveAsync(profile, ct);
-                        await bot.SendMessage(chatId,
+                        await MessageSender.SendWithRetry(chatId,
                             "Perfecto ✅. Ahora pasame tu email de Google (ej: nombre@gmail.com).",
                             cancellationToken: ct);
                         return (true, profile);
@@ -83,7 +84,7 @@ namespace RegistroCx.Services.Onboarding
                         profile.Phone = phoneManual;
                         profile.State = UserState.NeedEmail;
                         await _repo.SaveAsync(profile, ct);
-                        await bot.SendMessage(chatId,
+                        await MessageSender.SendWithRetry(chatId,
                             "Perfecto ✅. Ahora pasame tu email de Google (ej: nombre@gmail.com).",
                             cancellationToken: ct);
                     }
@@ -99,13 +100,13 @@ namespace RegistroCx.Services.Onboarding
                         profile.GoogleEmail = rawText.Trim();
                         profile.State = UserState.NeedOAuth;
                         await _repo.SaveAsync(profile, ct);
-                        await bot.SendMessage(chatId,
+                        await MessageSender.SendWithRetry(chatId,
                             "Genial ✅. Escribí *continuar* para autorizar Calendar.",
                             cancellationToken: ct);
                     }
                     else
                     {
-                        await bot.SendMessage(chatId,
+                        await MessageSender.SendWithRetry(chatId,
                             "Email inválido. Ejemplo: algo@gmail.com",
                             cancellationToken: ct);
                     }
@@ -120,13 +121,13 @@ namespace RegistroCx.Services.Onboarding
 
                         // Generar URL real
                         var url = _oauth.BuildAuthUrl(chatId, profile.GoogleEmail!);
-                        await bot.SendMessage(chatId,
+                        await MessageSender.SendWithRetry(chatId,
                             $"Abri este enlace para autorizar:\n{url}\nLuego escribí *ok*.",
                             cancellationToken: ct);
                     }
                     else
                     {
-                        await bot.SendMessage(chatId,
+                        await MessageSender.SendWithRetry(chatId,
                             "Escribí *continuar* para generar el enlace.",
                             cancellationToken: ct);
                     }
@@ -138,13 +139,13 @@ namespace RegistroCx.Services.Onboarding
                         // en callback ya se guardaron tokens
                         profile.State = UserState.Ready;
                         await _repo.SaveAsync(profile, ct);
-                        await bot.SendMessage(chatId,
+                        await MessageSender.SendWithRetry(chatId,
                             "✅ Autorización completa. Ya podés enviar cirugías.",
                             cancellationToken: ct);
                     }
                     else
                     {
-                        await bot.SendMessage(chatId,
+                        await MessageSender.SendWithRetry(chatId,
                             "Cuando autorices, escribí *ok*.",
                             cancellationToken: ct);
                     }
@@ -166,7 +167,7 @@ namespace RegistroCx.Services.Onboarding
     1) Escribí ""/semanal"" para que te envíe el resumen de esta semana.
     2) Escribí ""/mensual"" para que te envíe todo lo que pasó en el último mes.
     3) Mandame los datos de cualquier cirugía para que los pueda registrar en tu calendario.";
-            await bot.SendMessage(chatId, txt, cancellationToken: ct);
+            await MessageSender.SendWithRetry(chatId, txt, cancellationToken: ct);
             }
             else
             {
@@ -186,7 +187,7 @@ namespace RegistroCx.Services.Onboarding
     3) Autoriza Calendar
     4) Envía la cirugía";
 
-            await bot.SendMessage(chatId, txt, replyMarkup: kb, cancellationToken: ct);
+            await MessageSender.SendWithRetry(chatId, txt, replyMarkup: kb, cancellationToken: ct);
             }
         }
 

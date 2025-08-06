@@ -2,6 +2,7 @@ using Telegram.Bot;
 using Telegram.Bot.Exceptions;
 using RegistroCx.Models;
 using RegistroCx.Helpers;
+using RegistroCx.ProgramServices.Services.Telegram;
 
 namespace RegistroCx.Services.Flow;
 
@@ -12,9 +13,18 @@ public class FlowWizardHandler
 
     public async Task<bool> HandleFieldWizard(ITelegramBotClient bot, Appointment appt, string rawText, long chatId, CancellationToken ct)
     {
+        Console.WriteLine($"[WIZARD] CampoQueFalta={appt.CampoQueFalta}, ConfirmacionPendiente={appt.ConfirmacionPendiente}, rawText='{rawText}'");
+        
         if (appt.CampoQueFalta == Appointment.CampoPendiente.Ninguno || appt.ConfirmacionPendiente)
+        {
+            Console.WriteLine("[WIZARD] Returning false - no field needed or confirmation pending");
             return false;
-        return await ResolveFieldValue(bot, appt, rawText, chatId, ct);
+        }
+        
+        Console.WriteLine("[WIZARD] Processing field value...");
+        var result = await ResolveFieldValue(bot, appt, rawText, chatId, ct);
+        Console.WriteLine($"[WIZARD] ResolveFieldValue returned: {result}");
+        return result;
     }
 
     private async Task<bool> ResolveFieldValue(ITelegramBotClient bot, Appointment appt, string rawText, long chatId, CancellationToken ct)
@@ -53,9 +63,9 @@ public class FlowWizardHandler
     {
         if (NeedsLLMNormalization(campoCompletado))
         {
-            // Campos que necesitan normalización por LLM
-            await SendMessageWithRetry(bot, chatId, "⏳ Procesando...", ct);
-            return true;
+            // Campos que necesitan normalización por LLM - NO terminamos aquí, 
+            // dejamos que continue al ProcessWithLLM en CirugiaFlowService
+            return false;
         }
         else
         {
@@ -89,7 +99,7 @@ public class FlowWizardHandler
         {
             try
             {
-                await bot.SendMessage(chatId, message, cancellationToken: ct);
+                await MessageSender.SendWithRetry(chatId, message, cancellationToken: ct);
                 return; // Éxito, salir del loop
             }
             catch (ApiRequestException ex) when (ex.ErrorCode == 429) // Too Many Requests

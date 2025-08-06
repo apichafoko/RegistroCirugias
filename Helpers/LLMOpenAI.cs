@@ -14,8 +14,8 @@ namespace RegistroCx.Helpers
     public static class LLMOpenAI
     {
 
-    private static Kernel _kernel;
-    private static KernelFunction _extractEntitiesFunc;
+    private static Kernel? _kernel;
+    private static KernelFunction? _extractEntitiesFunc;
         private static readonly HttpClient _httpClient = new HttpClient();
         // Carga tu API Key de OpenAI desde una variable de entorno para mayor seguridad
         //private static readonly string ApiKey = Environment.GetEnvironmentVariable("OPENAI_API_KEY")
@@ -110,7 +110,7 @@ namespace RegistroCx.Helpers
             return result;
         }
 
-        public static async Task InitializeAsync()
+        public static void Initialize()
         {
             // Configura el Kernel
             var builder = Kernel.CreateBuilder();
@@ -118,12 +118,15 @@ namespace RegistroCx.Helpers
 
             RegisterExtractFunction();
         }
-    
+
         /// <summary>
-    /// Registra el prompt que extrae los campos y devuelve JSON.
-    /// </summary>
-    private static void RegisterExtractFunction()
+        /// Registra el prompt que extrae los campos y devuelve JSON.
+        /// </summary>
+        private static void RegisterExtractFunction()
     {
+        if (_kernel == null)
+            throw new InvalidOperationException("_kernel is not initialized. Call Initialize() before registering functions.");
+
         _extractEntitiesFunc = _kernel.CreateFunctionFromPrompt(
             promptTemplate: PROMPT_TEMPLATE,
             functionName: "extractEntities",
