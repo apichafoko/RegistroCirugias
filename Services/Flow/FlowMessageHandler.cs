@@ -5,6 +5,7 @@ using RegistroCx.ProgramServices.Services.Telegram;
 using RegistroCx.Services;
 using RegistroCx.Helpers._0Auth;
 using RegistroCx.Services.Repositories;
+using RegistroCx.Services.Reports;
 
 namespace RegistroCx.Services.Flow;
 
@@ -13,15 +14,21 @@ public class FlowMessageHandler
     private readonly IGoogleOAuthService _oauthService;
     private readonly IUserProfileRepository _userRepo;
     private readonly CalendarSyncService _calendarSync;
+    private readonly IAppointmentRepository _appointmentRepo;
+    private readonly IReportService _reportService;
 
     public FlowMessageHandler(
         IGoogleOAuthService oauthService, 
         IUserProfileRepository userRepo, 
-        CalendarSyncService calendarSync)
+        CalendarSyncService calendarSync,
+        IAppointmentRepository appointmentRepo,
+        IReportService reportService)
     {
         _oauthService = oauthService;
         _userRepo = userRepo;
         _calendarSync = calendarSync;
+        _appointmentRepo = appointmentRepo;
+        _reportService = reportService;
     }
     public async Task<bool> HandleSpecialCommandsAsync(ITelegramBotClient bot, long chatId, string rawText, CancellationToken ct)
     {
@@ -38,6 +45,36 @@ public class FlowMessageHandler
         if (textLower is "/autorizar" or "autorizar")
         {
             await HandleAuthorizationCommand(bot, chatId, ct);
+            return true;
+        }
+
+        if (textLower is "/test-reminder" or "/testreminder")
+        {
+            await HandleTestReminderCommand(bot, chatId, ct);
+            return true;
+        }
+
+        if (textLower is "/help-audio" or "/audio-help")
+        {
+            await HandleAudioHelpCommand(bot, chatId, ct);
+            return true;
+        }
+
+        if (textLower is "/test-multi" or "/multi-test")
+        {
+            await HandleTestMultiSurgeriesCommand(bot, chatId, ct);
+            return true;
+        }
+
+        // Comandos de reportes
+        if (textLower is "/semanal" or "/mensual" or "/anual")
+        {
+            return await _reportService.HandleReportCommandAsync(bot, chatId, rawText, ct);
+        }
+
+        // También manejar respuestas a comandos de reportes pendientes (sin /)
+        if (await _reportService.HandleReportCommandAsync(bot, chatId, rawText, ct))
+        {
             return true;
         }
 
@@ -69,6 +106,129 @@ public class FlowMessageHandler
             Console.WriteLine($"[AUTHORIZATION] Error starting authorization: {ex}");
             await MessageSender.SendWithRetry(chatId,
                 "❌ Hubo un error al iniciar el proceso de autorización. Por favor, intenta nuevamente.",
+                cancellationToken: ct);
+        }
+    }
+
+    private async Task HandleTestReminderCommand(ITelegramBotClient bot, long chatId, CancellationToken ct)
+    {
+        try
+        {
+            Console.WriteLine($"[TEST-REMINDER] Manual reminder check requested for chat {chatId}");
+
+            // Get appointments that need reminders (normally would be called by background service)
+            var appointmentsNeedingReminders = await _appointmentRepo.GetAppointmentsNeedingRemindersAsync(ct);
+            
+            if (appointmentsNeedingReminders.Count == 0)
+            {
+                await MessageSender.SendWithRetry(chatId,
+                    "ℹ️ No hay cirugías que necesiten recordatorio en las próximas 24 horas.",
+                    cancellationToken: ct);
+                return;
+            }
+
+            await MessageSender.SendWithRetry(chatId,
+                $"🔍 Encontré {appointmentsNeedingReminders.Count} cirugia(s) que necesitan recordatorio:",
+                cancellationToken: ct);
+
+            foreach (var appointment in appointmentsNeedingReminders)
+            {
+                // Test the reminder logic
+                if (appointment.FechaHora.HasValue)
+                {
+                    var timeUntilSurgery = appointment.FechaHora.Value - DateTime.Now;
+                    var hoursUntil = (int)timeUntilSurgery.TotalHours;
+
+                    var testMessage = $"⏰ **TEST RECORDATORIO**\n\n" +
+                                     $"🏥 **{appointment.Cantidad} {appointment.Cirugia?.ToUpper()}**\n" +
+                                     $"📅 **Fecha:** {appointment.FechaHora:dddd, dd MMMM yyyy}\n" +
+                                     $"⌚ **Hora:** {appointment.FechaHora:HH:mm}\n" +
+                                     $"📍 **Lugar:** {appointment.Lugar}\n" +
+                                     $"👨‍⚕️ **Cirujano:** {appointment.Cirujano}\n" +
+                                     $"💉 **Anestesiólogo:** {appointment.Anestesiologo}\n\n" +
+                                     $"⏳ **Faltan {hoursUntil} horas**\n\n" +
+                                     $"*Este es un recordatorio de prueba. El recordatorio real se enviará automáticamente.*";
+
+                    await MessageSender.SendWithRetry(chatId, testMessage, cancellationToken: ct);
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[TEST-REMINDER] Error testing reminders: {ex}");
+            await MessageSender.SendWithRetry(chatId,
+                "❌ Error al probar los recordatorios. Verifica los logs.",
+                cancellationToken: ct);
+        }
+    }
+
+    private async Task HandleAudioHelpCommand(ITelegramBotClient bot, long chatId, CancellationToken ct)
+    {
+        try
+        {
+            var helpMessage = "🎤 **AYUDA DE MENSAJES DE VOZ Y AUDIO**\n\n" +
+                             "✨ **Ahora puedes enviar mensajes de voz para registrar cirugías!**\n\n" +
+                             "📋 **Cómo funciona:**\n" +
+                             "• Mantén presionado el botón del micrófono 🎤\n" +
+                             "• Habla claramente describiendo la cirugía\n" +
+                             "• Suelta para enviar el mensaje de voz\n" +
+                             "• El bot convertirá tu voz a texto y procesará la información\n\n" +
+                             "🎯 **Ejemplo de lo que puedes decir:**\n" +
+                             "\"Hola, necesito agendar una amigdalectomía para mañana a las 2 de la tarde en el Hospital Italiano con el doctor Rodriguez y anestesiólogo Martinez\"\n\n" +
+                             "🔧 **También acepta:**\n" +
+                             "• Archivos de audio (.mp3, .ogg, .wav)\n" +
+                             "• Mensajes de voz de Telegram\n" +
+                             "• Comandos por voz (ej: \"cancelar\", \"confirmar\")\n\n" +
+                             "⚡ **El procesamiento toma unos segundos**\n" +
+                             "Te mostraré lo que entendí antes de procesarlo.\n\n" +
+                             "¡Prueba enviando un mensaje de voz ahora! 🎤";
+
+            await MessageSender.SendWithRetry(chatId, helpMessage, cancellationToken: ct);
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[AUDIO-HELP] Error showing audio help: {ex}");
+            await MessageSender.SendWithRetry(chatId,
+                "❌ Error mostrando la ayuda de audio.",
+                cancellationToken: ct);
+        }
+    }
+
+    private async Task HandleTestMultiSurgeriesCommand(ITelegramBotClient bot, long chatId, CancellationToken ct)
+    {
+        try
+        {
+            var helpMessage = "🔥 **PRUEBA DE MÚLTIPLES CIRUGÍAS**\n\n" +
+                             "✨ **Ahora puedes registrar múltiples cirugías en un solo mensaje!**\n\n" +
+                             "📋 **Formatos soportados:**\n" +
+                             "• `2 CERS + 1 MLD mañana 14hs Anchorena Quiroga Martinez`\n" +
+                             "• `3 adenoides y 2 amígdalas 15/08 Hospital Rodriguez`\n" +
+                             "• `CERS x2, MLD x1 hoy 16hs`\n" +
+                             "• `2x CERS, 1x MLD pasado mañana`\n" +
+                             "• `CERS por 2 más MLD por 1`\n\n" +
+                             "🎯 **Ejemplos que puedes probar:**\n" +
+                             "1. `2 CERS + 1 MLD mañana 14hs Sanatorio Anchorena Dr. Quiroga Martinez`\n" +
+                             "2. `3 adenoides y 2 amígdalas 15/08/2025 Hospital Italiano`\n" +
+                             "3. `CERS x2, MLD x1 hoy 16:30 Mater Dei`\n\n" +
+                             "⚡ **Cómo funciona:**\n" +
+                             "1. **Completa todos los datos** (fecha, hora, lugar, cirujano, anestesiólogo)\n" +
+                             "2. **Detecta múltiples cirugías** automáticamente al confirmar\n" +
+                             "3. **Crea cada cirugía** con los mismos datos base\n" +
+                             "4. **Permite editar individualmente** cada cirugía\n" +
+                             "5. **Te muestra resumen final** para confirmar todas juntas\n\n" +
+                             "✏️ **Comandos de edición granular:**\n" +
+                             "• `cirugía 1 hora 16hs` - Cambiar hora específica\n" +
+                             "• `MLD lugar Hospital Italiano` - Cambiar por nombre\n" +
+                             "• `primera cirugía anestesiólogo López` - Por posición\n\n" +
+                             "🧪 **¡Prueba enviando uno de los ejemplos ahora!**";
+
+            await MessageSender.SendWithRetry(chatId, helpMessage, cancellationToken: ct);
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[MULTI-TEST] Error showing multi surgery help: {ex}");
+            await MessageSender.SendWithRetry(chatId,
+                "❌ Error mostrando la ayuda de múltiples cirugías.",
                 cancellationToken: ct);
         }
     }

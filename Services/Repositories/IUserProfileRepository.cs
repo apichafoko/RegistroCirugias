@@ -14,6 +14,12 @@ public interface IUserProfileRepository
 
     Task StoreOAuthStateAsync(long chatId, string nonce, CancellationToken ct);
     Task UpdateTokensAsync(long chatId, string access, string? refresh, DateTime? expiry, CancellationToken ct);
+    
+    // Métodos para vinculación de perfiles existentes
+    Task<UserProfile?> FindByPhoneAsync(string phone, CancellationToken ct = default);
+    Task<UserProfile?> FindByEmailAsync(string email, CancellationToken ct = default);
+    Task LinkChatIdAsync(long originalChatId, long newChatId, CancellationToken ct = default);
+    Task<UserProfile> CreateProfileCopyingEmailTokensAsync(UserProfile sourceProfile, long newChatId, CancellationToken ct = default);
 
 
 }

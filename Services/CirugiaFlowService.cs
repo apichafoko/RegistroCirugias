@@ -2,8 +2,11 @@ using Telegram.Bot;
 using RegistroCx.Models;
 using RegistroCx.Services.Extraction;
 using RegistroCx.Services.Flow;
+using RegistroCx.Services.Reports;
 using RegistroCx.Helpers._0Auth;
 using RegistroCx.Services.Repositories;
+using RegistroCx.ProgramServices.Services.Telegram;
+using System.Text.RegularExpressions;
 
 namespace RegistroCx.Services;
 
@@ -53,6 +56,7 @@ public class CirugiaFlowService
     private readonly FlowWizardHandler _wizardHandler;
     private readonly FlowLLMProcessor _llmProcessor;
     private readonly AppointmentConfirmationService _confirmationService;
+    private readonly MultiSurgeryParser _multiSurgeryParser;
 
     public CirugiaFlowService(
         LLMOpenAIAssistant llm, 
@@ -60,19 +64,26 @@ public class CirugiaFlowService
         AppointmentConfirmationService confirmationService,
         IGoogleOAuthService oauthService,
         IUserProfileRepository userRepo,
-        CalendarSyncService calendarSync)
+        CalendarSyncService calendarSync,
+        IAppointmentRepository appointmentRepo,
+        MultiSurgeryParser multiSurgeryParser,
+        IReportService reportService)
     {
         _llm = llm;
         _pending = pending;
         _confirmationService = confirmationService;
+        _multiSurgeryParser = multiSurgeryParser;
         _stateManager = new FlowStateManager(_pending);
-        _messageHandler = new FlowMessageHandler(oauthService, userRepo, calendarSync);
+        _messageHandler = new FlowMessageHandler(oauthService, userRepo, calendarSync, appointmentRepo, reportService);
         _wizardHandler = new FlowWizardHandler();
         _llmProcessor = new FlowLLMProcessor(llm);
     }
 
     public async Task HandleAsync(ITelegramBotClient bot, long chatId, string rawText, CancellationToken ct)
     {
+        // INMEDIATO: Enviar mensaje de "Procesando..." para reducir ansiedad del usuario
+        await MessageSender.SendWithRetry(chatId, "⏳ Procesando...", cancellationToken: ct);
+        
         // Manejar comandos especiales
         if (await _messageHandler.HandleSpecialCommandsAsync(bot, chatId, rawText, ct))
         {
@@ -87,6 +98,12 @@ public class CirugiaFlowService
         // Manejar captura de email del anestesiólogo
         if (await HandleEmailCapture(bot, appt, rawText, chatId, ct))
         {
+            // Si el appointment está listo para limpieza, limpiar el contexto
+            if (appt.ReadyForCleanup)
+            {
+                Console.WriteLine("[FLOW] Appointment ready for cleanup after email handling - clearing context");
+                _stateManager.ClearContext(chatId);
+            }
             return;
         }
 
@@ -121,27 +138,691 @@ public class CirugiaFlowService
         }
 
         Console.WriteLine("[FLOW] Going to LLM - no other handler processed the message");
-        // Procesar con LLM para casos nuevos
+        
+        // NUEVO: Detectar múltiples cirugías ANTES del procesamiento LLM
+        if (appt.HistoricoInputs.Count == 1) // Solo para el primer input del usuario
+        {
+            Console.WriteLine("[FLOW] First user input - checking for multiple surgeries");
+            var parseResult = await _multiSurgeryParser.ParseInputAsync(rawText);
+            
+            if (parseResult.IsMultiple)
+            {
+                Console.WriteLine($"[FLOW] ✅ Multiple surgeries detected at start: {parseResult.IndividualInputs.Count} surgeries");
+                
+                // GUARDAR la información de múltiples cirugías en el appointment
+                appt.Notas = $"MULTIPLE_DETECTED:{parseResult.IndividualInputs.Count}|" + 
+                            string.Join("|", parseResult.DetectedSurgeries.Select(s => $"{s.Quantity}:{s.SurgeryName}"));
+                
+                Console.WriteLine($"[FLOW] Saved multiple surgery info in Notas: {appt.Notas}");
+                
+                // Continúar con flujo normal para completar datos faltantes
+                // La detección se aplicará cuando todo esté completo
+            }
+            else
+            {
+                Console.WriteLine("[FLOW] Single surgery detected - proceeding normally");
+            }
+        }
+        
+        // Procesar con LLM para casos nuevos (primero completar todos los datos)
         await _llmProcessor.ProcessWithLLM(bot, appt, rawText, chatId, ct);
     }
 
     private async Task<bool> HandleConfirmationFlow(ITelegramBotClient bot, Appointment appt, string rawText, long chatId, CancellationToken ct)
     {
+        var inputLower = rawText.Trim().ToLowerInvariant();
+        
+        // Verificar si es una confirmación de múltiples cirugías
+        if (appt.ConfirmacionPendiente && !string.IsNullOrWhiteSpace(appt.Notas) && 
+            appt.Notas.StartsWith("MARKER_MULTIPLE_SURGERIES:"))
+        {
+            if (inputLower is "si" or "sí" or "ok" or "dale" or "confirmo" or "confirmar" or "confirmar todas")
+            {
+                await HandleMultipleConfirmation(bot, appt, chatId, ct);
+                return true;
+            }
+            else if (inputLower.StartsWith("no") || IsMultipleSurgeryEditCommand(rawText))
+            {
+                await HandleMultipleSurgeryEdit(bot, appt, rawText, chatId, ct);
+                return true;
+            }
+        }
+        
         // Primero dejar que el handler maneje la lógica básica de confirmación
         if (await _messageHandler.HandleConfirmationAsync(bot, appt, rawText, chatId, ct))
         {
-            // Si era una confirmación positiva y ya no está pendiente, procesar la confirmación completa
-            if (appt.ConfirmacionPendiente == false && rawText.Trim().ToLowerInvariant() is "si" or "sí" or "ok" or "dale" or "confirmo" or "confirmar")
+            // Si era una confirmación positiva y ya no está pendiente, verificar si hay múltiples cirugías
+            if (appt.ConfirmacionPendiente == false && inputLower is "si" or "sí" or "ok" or "dale" or "confirmo" or "confirmar")
             {
-                // Procesar la confirmación completa (DB, Calendar, Email)
-                await _confirmationService.ProcessConfirmationAsync(bot, appt, chatId, ct);
-                
-                // Limpiar el contexto
-                _stateManager.ClearContext(chatId);
+                // NUEVO: Verificar si habíamos detectado múltiples cirugías anteriormente
+                if (!string.IsNullOrEmpty(appt.Notas) && appt.Notas.StartsWith("MULTIPLE_DETECTED:"))
+                {
+                    Console.WriteLine($"[FLOW] Found saved multiple surgery info: {appt.Notas}");
+                    
+                    // Parsear la información guardada
+                    var parseResult = ParseSavedMultipleSurgeryInfo(appt.Notas, appt.HistoricoInputs[0]);
+                    
+                    if (parseResult.IsMultiple)
+                    {
+                        Console.WriteLine($"[FLOW] Processing saved multiple surgeries after validation: {parseResult.IndividualInputs.Count} surgeries");
+                        
+                        // Limpiar el contexto actual antes de procesar múltiples
+                        _stateManager.ClearContext(chatId);
+                        
+                        // Procesar múltiples cirugías con todos los datos ya validados
+                        await HandleMultipleSurgeriesAfterValidation(bot, parseResult, appt, chatId, ct);
+                    }
+                    else
+                    {
+                        // Fallback a procesamiento normal
+                        await _confirmationService.ProcessConfirmationAsync(bot, appt, chatId, ct);
+                        
+                        // Solo limpiar contexto si no está esperando email del anestesiólogo
+                        if (appt.CampoQueFalta != Appointment.CampoPendiente.EsperandoEmailAnestesiologo)
+                        {
+                            _stateManager.ClearContext(chatId);
+                        }
+                    }
+                }
+                else
+                {
+                    // Procesar confirmación normal (una sola cirugía)
+                    await _confirmationService.ProcessConfirmationAsync(bot, appt, chatId, ct);
+                    
+                    // Solo limpiar contexto si no está esperando email del anestesiólogo
+                    if (appt.CampoQueFalta != Appointment.CampoPendiente.EsperandoEmailAnestesiologo)
+                    {
+                        _stateManager.ClearContext(chatId);
+                    }
+                }
             }
             return true;
         }
         return false;
+    }
+
+    private async Task HandleMultipleSurgeriesFromStart(ITelegramBotClient bot, MultiSurgeryParser.ParseResult parseResult, long chatId, CancellationToken ct)
+    {
+        try
+        {
+            Console.WriteLine($"[FLOW] Starting multiple surgery processing from the beginning with {parseResult.IndividualInputs.Count} surgeries");
+            
+            await MessageSender.SendWithRetry(chatId, 
+                $"🔍 **Detecté {parseResult.IndividualInputs.Count} cirugías diferentes:**\n" +
+                string.Join("\n", parseResult.DetectedSurgeries.Select((s, i) => $"{i + 1}. {s.Quantity} {s.SurgeryName}")) + 
+                "\n\n⚡ Procesando cada cirugía por separado...", 
+                cancellationToken: ct);
+
+            var appointments = new List<Appointment>();
+            
+            // Procesar cada cirugía individualmente
+            for (int i = 0; i < parseResult.IndividualInputs.Count; i++)
+            {
+                var individualInput = parseResult.IndividualInputs[i];
+                var surgeryInfo = parseResult.DetectedSurgeries[i];
+                
+                Console.WriteLine($"[FLOW] Processing surgery {i + 1}: {individualInput}");
+                
+                // Crear un chatId temporal único para cada cirugía
+                var tempChatId = chatId + (i + 1) * 10000; // Offset para evitar conflictos
+                var tempAppt = _stateManager.GetOrCreateAppointment(tempChatId);
+                tempAppt.HistoricoInputs.Add(individualInput);
+                
+                // Procesar con LLM individual
+                await _llmProcessor.ProcessWithLLM(bot, tempAppt, individualInput, tempChatId, ct);
+                
+                appointments.Add(tempAppt);
+            }
+            
+            // Crear marcador para el flujo de confirmación múltiple
+            var markerAppt = _stateManager.GetOrCreateAppointment(chatId);
+            markerAppt.ConfirmacionPendiente = true;
+            markerAppt.Notas = $"MULTIPLE_SURGERIES:{parseResult.IndividualInputs.Count}";
+            
+            Console.WriteLine($"[FLOW] Multiple surgery processing initiated for {parseResult.IndividualInputs.Count} surgeries");
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[FLOW] Error in HandleMultipleSurgeriesFromStart: {ex}");
+            await MessageSender.SendWithRetry(chatId, 
+                "❌ Error procesando múltiples cirugías. Intenta nuevamente.", 
+                cancellationToken: ct);
+        }
+    }
+    
+    private MultiSurgeryParser.ParseResult ParseSavedMultipleSurgeryInfo(string notas, string originalInput)
+    {
+        try
+        {
+            // Formato: "MULTIPLE_DETECTED:2|1:HAVA|2:CERS"
+            var parts = notas.Split('|');
+            if (parts.Length < 2 || !parts[0].StartsWith("MULTIPLE_DETECTED:"))
+            {
+                return new MultiSurgeryParser.ParseResult { IsMultiple = false, IndividualInputs = new List<string> { originalInput } };
+            }
+            
+            var countStr = parts[0].Substring("MULTIPLE_DETECTED:".Length);
+            if (!int.TryParse(countStr, out var count))
+            {
+                return new MultiSurgeryParser.ParseResult { IsMultiple = false, IndividualInputs = new List<string> { originalInput } };
+            }
+            
+            var surgeries = new List<MultiSurgeryParser.SurgeryInfo>();
+            var individualInputs = new List<string>();
+            
+            // Extraer contexto base del input original (sin las cirugías)
+            var baseContext = ExtractBaseContextFromOriginalInput(originalInput);
+            
+            for (int i = 1; i < parts.Length && i <= count; i++)
+            {
+                var surgeryPart = parts[i];
+                var surgeryData = surgeryPart.Split(':');
+                if (surgeryData.Length == 2 && int.TryParse(surgeryData[0], out var quantity))
+                {
+                    var surgeryName = surgeryData[1];
+                    surgeries.Add(new MultiSurgeryParser.SurgeryInfo
+                    {
+                        Quantity = quantity,
+                        SurgeryName = surgeryName,
+                        OriginalText = $"{quantity} {surgeryName}"
+                    });
+                    
+                    // Crear input individual con contexto base
+                    individualInputs.Add($"{quantity} {surgeryName} {baseContext}".Trim());
+                }
+            }
+            
+            Console.WriteLine($"[FLOW] Parsed {surgeries.Count} surgeries from saved info");
+            
+            return new MultiSurgeryParser.ParseResult
+            {
+                IsMultiple = surgeries.Count > 1,
+                OriginalInput = originalInput,
+                IndividualInputs = individualInputs,
+                DetectedSurgeries = surgeries
+            };
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[FLOW] Error parsing saved multiple surgery info: {ex}");
+            return new MultiSurgeryParser.ParseResult { IsMultiple = false, IndividualInputs = new List<string> { originalInput } };
+        }
+    }
+    
+    private string ExtractBaseContextFromOriginalInput(string originalInput)
+    {
+        // Remover patrones conocidos de múltiples cirugías del input original
+        var patterns = new[]
+        {
+            @"\d+\s+[A-Za-zÁÉÍÓÚáéíóúñÑ]+\s+y\s+\d+\s+[A-Za-zÁÉÍÓÚáéíóúñÑ]+",
+            @"\d+\s+[A-Za-zÁÉÍÓÚáéíóúñÑ]+\s*\+\s*\d+\s+[A-Za-zÁÉÍÓÚáéíóúñÑ]+",
+            @"[A-Za-zÁÉÍÓÚáéíóúñÑ]+\s*x\s*\d+\s*,\s*[A-Za-zÁÉÍÓÚáéíóúñÑ]+\s*x\s*\d+",
+            @"\d+\s*x\s*[A-Za-zÁÉÍÓÚáéíóúñÑ]+\s*,\s*\d+\s*x\s*[A-Za-zÁÉÍÓÚáéíóúñÑ]+"
+        };
+        
+        var baseContext = originalInput;
+        
+        foreach (var pattern in patterns)
+        {
+            baseContext = System.Text.RegularExpressions.Regex.Replace(baseContext, pattern, "", RegexOptions.IgnoreCase);
+        }
+        
+        // Limpiar espacios múltiples
+        baseContext = System.Text.RegularExpressions.Regex.Replace(baseContext, @"\s+", " ").Trim();
+        
+        Console.WriteLine($"[FLOW] Extracted base context: '{baseContext}' from '{originalInput}'");
+        return baseContext;
+    }
+
+    private async Task HandleMultipleConfirmation(ITelegramBotClient bot, Appointment markerAppt, long chatId, CancellationToken ct)
+    {
+        try
+        {
+            // Extraer número de cirugías del marker
+            var countStr = markerAppt.Notas.Split(':')[1];
+            if (!int.TryParse(countStr, out var surgeryCount))
+            {
+                await MessageSender.SendWithRetry(chatId, "❌ Error procesando confirmación múltiple.", cancellationToken: ct);
+                return;
+            }
+
+            var successCount = 0;
+            var errors = new List<string>();
+            var confirmedSurgeries = new List<string>();
+            var emailRequests = new List<string>();
+
+            // Procesar cada cirugía guardada SILENCIOSAMENTE
+            for (int i = 1; i <= surgeryCount; i++)
+            {
+                try
+                {
+                    var tempChatId = chatId + i * 100;
+                    var savedAppt = _stateManager.GetOrCreateAppointment(tempChatId);
+                    
+                    if (!string.IsNullOrWhiteSpace(savedAppt.Cirugia))
+                    {
+                        // Procesar confirmación sin enviar mensajes individuales (modo silencioso)
+                        var success = await _confirmationService.ProcessConfirmationAsync(bot, savedAppt, chatId, ct, silent: true);
+                        
+                        if (success)
+                        {
+                            successCount++;
+                            confirmedSurgeries.Add($"✅ **{savedAppt.Cantidad} {savedAppt.Cirugia?.ToUpper()}**");
+                            
+                            // Si hay anestesiólogo sin email, agregar a lista de pendientes
+                            if (!string.IsNullOrWhiteSpace(savedAppt.Anestesiologo) && 
+                                savedAppt.CampoQueFalta == Appointment.CampoPendiente.EsperandoEmailAnestesiologo)
+                            {
+                                emailRequests.Add($"• {savedAppt.Anestesiologo}");
+                            }
+                        }
+                        else
+                        {
+                            errors.Add($"Cirugía {i}: {savedAppt.Cirugia}");
+                        }
+                    }
+                    
+                    // Limpiar contexto temporal
+                    _stateManager.ClearContext(tempChatId);
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"[MULTI-CONFIRM] Error confirming surgery {i}: {ex}");
+                    errors.Add($"Cirugía {i}");
+                }
+            }
+
+            // MENSAJE CONSOLIDADO ÚNICO
+            var finalMessage = $"🎉 **¡{successCount} cirugías confirmadas exitosamente!**\n\n";
+            
+            // Lista de cirugías confirmadas
+            finalMessage += string.Join("\n", confirmedSurgeries);
+            
+            // Información adicional
+            finalMessage += "\n\n📅 **Eventos creados en Google Calendar con recordatorio de 24hs**";
+            finalMessage += "\n💾 **Guardadas en la base de datos**";
+            
+            // Si hay emails pendientes
+            if (emailRequests.Count > 0)
+            {
+                finalMessage += "\n\n📧 **Emails pendientes para anestesiólogos:**\n";
+                finalMessage += string.Join("\n", emailRequests);
+                finalMessage += "\n\n💡 Podés enviarme los emails o escribir 'saltar' para omitir.";
+            }
+            
+            // Si hubo errores
+            if (errors.Count > 0)
+            {
+                finalMessage += $"\n\n❌ **{errors.Count} cirugías fallaron:**\n{string.Join("\n", errors)}";
+            }
+
+            await MessageSender.SendWithRetry(chatId, finalMessage, cancellationToken: ct);
+            
+            // Limpiar contexto principal
+            _stateManager.ClearContext(chatId);
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[MULTI-CONFIRM] Error in multiple confirmation: {ex}");
+            await MessageSender.SendWithRetry(chatId,
+                "❌ Error procesando confirmación múltiple. Intenta nuevamente.",
+                cancellationToken: ct);
+        }
+    }
+
+    private bool IsMultipleSurgeryEditCommand(string input)
+    {
+        var inputLower = input.ToLowerInvariant();
+        
+        // Patrones de edición granular
+        var editPatterns = new[]
+        {
+            @"cirug[íi]a\s*\d+",           // "cirugía 1", "cirugia 2"
+            @"(primera|segunda|tercera)\s+cirug[íi]a",  // "primera cirugía"
+            @"(cers|mld|adenoides|am[íi]gdalas)",       // nombres de cirugías
+            @"modificar|cambiar|editar",                 // comandos de edición
+            @"(hora|lugar|cirujano|aneste|cantidad)\s", // campos a modificar
+            @"la\s+(primera|segunda|tercera|última)"     // "la primera", "la segunda"
+        };
+
+        return editPatterns.Any(pattern => 
+            System.Text.RegularExpressions.Regex.IsMatch(inputLower, pattern));
+    }
+
+    private async Task HandleMultipleSurgeryEdit(ITelegramBotClient bot, Appointment markerAppt, string editCommand, long chatId, CancellationToken ct)
+    {
+        try
+        {
+            // Extraer número de cirugías del marker
+            var countStr = markerAppt.Notas.Split(':')[1];
+            if (!int.TryParse(countStr, out var surgeryCount))
+            {
+                await MessageSender.SendWithRetry(chatId, "❌ Error procesando edición múltiple.", cancellationToken: ct);
+                return;
+            }
+
+            // Cargar todas las cirugías guardadas
+            var surgeries = new List<Appointment>();
+            for (int i = 1; i <= surgeryCount; i++)
+            {
+                var tempChatId = chatId + i * 100;
+                var savedAppt = _stateManager.GetOrCreateAppointment(tempChatId);
+                if (!string.IsNullOrWhiteSpace(savedAppt.Cirugia))
+                {
+                    savedAppt.Notas = $"Cirugía {i}"; // Para identificación
+                    surgeries.Add(savedAppt);
+                }
+            }
+
+            if (surgeries.Count == 0)
+            {
+                await MessageSender.SendWithRetry(chatId, "❌ No se encontraron cirugías para editar.", cancellationToken: ct);
+                return;
+            }
+
+            // Parsear comando de edición
+            var editResult = ParseMultipleSurgeryEditCommand(editCommand, surgeries);
+
+            if (editResult.Success)
+            {
+                // Aplicar la edición
+                await ApplyMultipleSurgeryEdit(bot, editResult, surgeries, chatId, ct);
+            }
+            else
+            {
+                // Mostrar opciones de edición disponibles
+                await ShowMultipleSurgeryEditOptions(bot, surgeries, chatId, ct);
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[MULTI-EDIT] Error handling multiple surgery edit: {ex}");
+            await MessageSender.SendWithRetry(chatId,
+                "❌ Error procesando edición. Intenta nuevamente.",
+                cancellationToken: ct);
+        }
+    }
+
+    private MultiSurgeryEditResult ParseMultipleSurgeryEditCommand(string editCommand, List<Appointment> surgeries)
+    {
+        var inputLower = editCommand.ToLowerInvariant();
+        var result = new MultiSurgeryEditResult();
+
+        try
+        {
+            // Patron 1: "cirugía 2 hora 16hs"
+            var pattern1 = @"cirug[íi]a\s*(\d+)\s+(\w+)\s+(.+)";
+            var match1 = System.Text.RegularExpressions.Regex.Match(inputLower, pattern1);
+            if (match1.Success)
+            {
+                var surgeryIndex = int.Parse(match1.Groups[1].Value) - 1; // Convert to 0-based
+                var fieldName = match1.Groups[2].Value;
+                var newValue = match1.Groups[3].Value;
+
+                if (surgeryIndex >= 0 && surgeryIndex < surgeries.Count)
+                {
+                    result.Success = true;
+                    result.SurgeryIndex = surgeryIndex;
+                    result.FieldName = MapFieldName(fieldName);
+                    result.NewValue = newValue;
+                    return result;
+                }
+            }
+
+            // Patrón 2: "MLD hora 16hs" (por nombre de cirugía)
+            var pattern2 = @"(cers|mld|adenoides|am[íi]gdalas|amigdalas)\s+(\w+)\s+(.+)";
+            var match2 = System.Text.RegularExpressions.Regex.Match(inputLower, pattern2);
+            if (match2.Success)
+            {
+                var surgeryName = match2.Groups[1].Value;
+                var fieldName = match2.Groups[2].Value;
+                var newValue = match2.Groups[3].Value;
+
+                // Buscar cirugía por nombre
+                for (int i = 0; i < surgeries.Count; i++)
+                {
+                    if (surgeries[i].Cirugia?.ToLowerInvariant().Contains(surgeryName) == true)
+                    {
+                        result.Success = true;
+                        result.SurgeryIndex = i;
+                        result.FieldName = MapFieldName(fieldName);
+                        result.NewValue = newValue;
+                        return result;
+                    }
+                }
+            }
+
+            // Patrón 3: "primera cirugía lugar Hospital"
+            var pattern3 = @"(primera|segunda|tercera)\s+cirug[íi]a\s+(\w+)\s+(.+)";
+            var match3 = System.Text.RegularExpressions.Regex.Match(inputLower, pattern3);
+            if (match3.Success)
+            {
+                var position = match3.Groups[1].Value;
+                var fieldName = match3.Groups[2].Value;
+                var newValue = match3.Groups[3].Value;
+
+                var surgeryIndex = position switch
+                {
+                    "primera" => 0,
+                    "segunda" => 1,
+                    "tercera" => 2,
+                    _ => -1
+                };
+
+                if (surgeryIndex >= 0 && surgeryIndex < surgeries.Count)
+                {
+                    result.Success = true;
+                    result.SurgeryIndex = surgeryIndex;
+                    result.FieldName = MapFieldName(fieldName);
+                    result.NewValue = newValue;
+                    return result;
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[MULTI-EDIT] Error parsing edit command: {ex}");
+        }
+
+        return result;
+    }
+
+    private string MapFieldName(string fieldName)
+    {
+        return fieldName.ToLowerInvariant() switch
+        {
+            "hora" or "tiempo" => "hora",
+            "fecha" => "fecha", 
+            "lugar" or "hospital" or "clinica" => "lugar",
+            "cirujano" or "doctor" or "medico" => "cirujano",
+            "aneste" or "anestesiologo" or "anestesiologist" => "anestesiologo",
+            "cantidad" or "qty" => "cantidad",
+            _ => fieldName.ToLowerInvariant()
+        };
+    }
+
+    private async Task ApplyMultipleSurgeryEdit(ITelegramBotClient bot, MultiSurgeryEditResult editResult, List<Appointment> surgeries, long chatId, CancellationToken ct)
+    {
+        try
+        {
+            var targetSurgery = surgeries[editResult.SurgeryIndex];
+            var oldValue = "";
+            var fieldDisplayName = "";
+
+            // Aplicar la edición según el campo
+            switch (editResult.FieldName)
+            {
+                case "hora":
+                    oldValue = targetSurgery.FechaHora?.ToString("HH:mm") ?? "sin definir";
+                    if (TryParseTime(editResult.NewValue, out var newTime))
+                    {
+                        var baseDate = targetSurgery.FechaHora?.Date ?? DateTime.Today;
+                        targetSurgery.FechaHora = baseDate.Add(newTime);
+                        fieldDisplayName = "Hora";
+                    }
+                    else
+                    {
+                        await MessageSender.SendWithRetry(chatId, $"❌ Formato de hora inválido: {editResult.NewValue}", cancellationToken: ct);
+                        return;
+                    }
+                    break;
+
+                case "lugar":
+                    oldValue = targetSurgery.Lugar ?? "sin definir";
+                    targetSurgery.Lugar = editResult.NewValue;
+                    fieldDisplayName = "Lugar";
+                    break;
+
+                case "cirujano":
+                    oldValue = targetSurgery.Cirujano ?? "sin definir";
+                    targetSurgery.Cirujano = editResult.NewValue;
+                    fieldDisplayName = "Cirujano";
+                    break;
+
+                case "anestesiologo":
+                    oldValue = targetSurgery.Anestesiologo ?? "sin definir";
+                    targetSurgery.Anestesiologo = editResult.NewValue;
+                    fieldDisplayName = "Anestesiólogo";
+                    break;
+
+                case "cantidad":
+                    oldValue = targetSurgery.Cantidad?.ToString() ?? "sin definir";
+                    if (int.TryParse(editResult.NewValue, out var newQty))
+                    {
+                        targetSurgery.Cantidad = newQty;
+                        fieldDisplayName = "Cantidad";
+                    }
+                    else
+                    {
+                        await MessageSender.SendWithRetry(chatId, $"❌ Cantidad inválida: {editResult.NewValue}", cancellationToken: ct);
+                        return;
+                    }
+                    break;
+
+                default:
+                    await MessageSender.SendWithRetry(chatId, $"❌ Campo no reconocido: {editResult.FieldName}", cancellationToken: ct);
+                    return;
+            }
+
+            // Guardar la cirugía modificada
+            var tempChatId = chatId + (editResult.SurgeryIndex + 1) * 100;
+            _stateManager.SetAppointment(tempChatId, targetSurgery);
+
+            // Confirmar la edición
+            await MessageSender.SendWithRetry(chatId,
+                $"✅ **Cirugía {editResult.SurgeryIndex + 1}** modificada:\n" +
+                $"🔹 {fieldDisplayName}: `{oldValue}` → `{editResult.NewValue}`\n\n" +
+                $"📋 **{targetSurgery.Cantidad} {targetSurgery.Cirugia?.ToUpper()}**\n" +
+                $"📅 {targetSurgery.FechaHora:dddd, dd MMMM yyyy HH:mm}\n" +
+                $"🏥 {targetSurgery.Lugar}\n" +
+                $"👨‍⚕️ {targetSurgery.Cirujano}\n" +
+                $"💉 {targetSurgery.Anestesiologo}",
+                cancellationToken: ct);
+
+            // Mostrar resumen actualizado
+            await ShowUpdatedMultipleSurgeriesSummary(bot, chatId, ct);
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[MULTI-EDIT] Error applying edit: {ex}");
+            await MessageSender.SendWithRetry(chatId, "❌ Error aplicando la edición.", cancellationToken: ct);
+        }
+    }
+
+    private bool TryParseTime(string timeStr, out TimeSpan time)
+    {
+        time = TimeSpan.Zero;
+        
+        try
+        {
+            // Limpiar y normalizar
+            timeStr = timeStr.ToLowerInvariant()
+                            .Replace("hs", "")
+                            .Replace("h", "")
+                            .Replace(".", ":")
+                            .Trim();
+
+            // Intentar parsear directamente
+            if (TimeSpan.TryParse(timeStr, out time))
+                return true;
+
+            // Intentar formato de una sola cifra (ej: "14" -> "14:00")
+            if (int.TryParse(timeStr, out var hour) && hour >= 0 && hour <= 23)
+            {
+                time = new TimeSpan(hour, 0, 0);
+                return true;
+            }
+
+            return false;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private async Task ShowMultipleSurgeryEditOptions(ITelegramBotClient bot, List<Appointment> surgeries, long chatId, CancellationToken ct)
+    {
+        var message = "✏️ **OPCIONES DE EDICIÓN**\n\n" +
+                     "📋 **Cirugías actuales:**\n";
+
+        for (int i = 0; i < surgeries.Count; i++)
+        {
+            var surgery = surgeries[i];
+            message += $"**{i + 1}. {surgery.Cantidad} {surgery.Cirugia?.ToUpper()}**\n" +
+                      $"   📅 {surgery.FechaHora:HH:mm} - 🏥 {surgery.Lugar}\n" +
+                      $"   👨‍⚕️ {surgery.Cirujano} - 💉 {surgery.Anestesiologo}\n\n";
+        }
+
+        message += "🛠️ **Comandos de edición:**\n" +
+                   "• `cirugía 1 hora 16hs` - Cambiar hora de cirugía específica\n" +
+                   "• `MLD lugar Hospital Italiano` - Cambiar por nombre\n" +
+                   "• `primera cirugía anestesiólogo López` - Cambiar por posición\n" +
+                   "• `CERS cirujano Rodriguez` - Cambiar por tipo\n\n" +
+                   "📝 **Campos editables:** hora, lugar, cirujano, anestesiologo, cantidad";
+
+        await MessageSender.SendWithRetry(chatId, message, cancellationToken: ct);
+    }
+
+    private async Task ShowUpdatedMultipleSurgeriesSummary(ITelegramBotClient bot, long chatId, CancellationToken ct)
+    {
+        // Obtener el marker para saber cuántas cirugías hay
+        var markerAppt = _stateManager.GetOrCreateAppointment(chatId);
+        if (string.IsNullOrWhiteSpace(markerAppt.Notas) || !markerAppt.Notas.StartsWith("MARKER_MULTIPLE_SURGERIES:"))
+            return;
+
+        var countStr = markerAppt.Notas.Split(':')[1];
+        if (!int.TryParse(countStr, out var surgeryCount))
+            return;
+
+        var summary = "📋 **RESUMEN ACTUALIZADO**\n\n";
+        
+        for (int i = 1; i <= surgeryCount; i++)
+        {
+            var tempChatId = chatId + i * 100;
+            var surgery = _stateManager.GetOrCreateAppointment(tempChatId);
+            
+            if (!string.IsNullOrWhiteSpace(surgery.Cirugia))
+            {
+                summary += $"**{i}. {surgery.Cantidad} {surgery.Cirugia?.ToUpper()}**\n" +
+                          $"📅 {surgery.FechaHora:dddd, dd MMMM yyyy HH:mm}\n" +
+                          $"🏥 {surgery.Lugar}\n" +
+                          $"👨‍⚕️ {surgery.Cirujano}\n" +
+                          $"💉 {surgery.Anestesiologo}\n\n";
+            }
+        }
+
+        summary += "🚀 **¿Confirmar TODAS las cirugías?** Responde **'si'** para proceder o edita otra cirugía.";
+
+        await MessageSender.SendWithRetry(chatId, summary, cancellationToken: ct);
+    }
+
+    public class MultiSurgeryEditResult
+    {
+        public bool Success { get; set; }
+        public int SurgeryIndex { get; set; }
+        public string FieldName { get; set; } = string.Empty;
+        public string NewValue { get; set; } = string.Empty;
     }
 
     private async Task<bool> HandleEmailCapture(ITelegramBotClient bot, Appointment appt, string rawText, long chatId, CancellationToken ct)
@@ -152,6 +833,379 @@ public class CirugiaFlowService
             return await _confirmationService.HandleEmailResponse(bot, appt, rawText, chatId, ct);
         }
         return false;
+    }
+
+    private async Task HandleMultipleSurgeries(ITelegramBotClient bot, MultiSurgeryParser.ParseResult parseResult, long chatId, CancellationToken ct)
+    {
+        try
+        {
+            Console.WriteLine($"[MULTI-SURGERY] Processing {parseResult.IndividualInputs.Count} surgeries for chat {chatId}");
+
+            // Informar al usuario que se detectaron múltiples cirugías
+            await MessageSender.SendWithRetry(chatId,
+                $"🔍 Detecté {parseResult.IndividualInputs.Count} cirugías diferentes:\n" +
+                string.Join("\n", parseResult.DetectedSurgeries.Select((s, i) => $"{i + 1}. {s.Quantity} {s.SurgeryName}")) +
+                "\n\nProcesando cada una...",
+                cancellationToken: ct);
+
+            var processedAppointments = new List<Appointment>();
+            var errors = new List<string>();
+
+            // Procesar cada cirugía individualmente
+            for (int i = 0; i < parseResult.IndividualInputs.Count; i++)
+            {
+                try
+                {
+                    var individualInput = parseResult.IndividualInputs[i];
+                    var surgeryInfo = parseResult.DetectedSurgeries[i];
+                    
+                    Console.WriteLine($"[MULTI-SURGERY] Processing surgery {i + 1}: {individualInput}");
+
+                    // Crear un contexto temporal para esta cirugía (usar el chatId real)
+                    var tempAppt = new Appointment { ChatId = chatId };
+                    tempAppt.HistoricoInputs.Add(individualInput);
+
+                    // Procesar con LLM usando el chatId real pero sin guardar en el state manager
+                    await ProcessSingleSurgeryWithLLM(bot, tempAppt, individualInput, chatId, ct);
+
+                    // Verificar si el procesamiento fue exitoso
+                    if (!string.IsNullOrWhiteSpace(tempAppt.Cirugia))
+                    {
+                        processedAppointments.Add(tempAppt);
+                        
+                        await MessageSender.SendWithRetry(chatId,
+                            $"✅ Cirugía {i + 1} procesada: {tempAppt.Cantidad} {tempAppt.Cirugia?.ToUpper()}",
+                            cancellationToken: ct);
+                    }
+                    else
+                    {
+                        errors.Add($"Cirugía {i + 1}: {surgeryInfo.SurgeryName}");
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"[MULTI-SURGERY] Error processing surgery {i + 1}: {ex}");
+                    errors.Add($"Cirugía {i + 1}: Error de procesamiento");
+                }
+            }
+
+            // Mostrar resumen final
+            if (processedAppointments.Count > 0)
+            {
+                await ShowMultipleSurgeriesSummary(bot, processedAppointments, chatId, ct);
+            }
+
+            if (errors.Count > 0)
+            {
+                await MessageSender.SendWithRetry(chatId,
+                    $"⚠️ Algunas cirugías no se pudieron procesar:\n{string.Join("\n", errors)}",
+                    cancellationToken: ct);
+            }
+
+            // Limpiar el contexto original después de procesar múltiples cirugías
+            _stateManager.ClearContext(chatId);
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[MULTI-SURGERY] Error handling multiple surgeries: {ex}");
+            await MessageSender.SendWithRetry(chatId,
+                "❌ Hubo un error procesando múltiples cirugías. Por favor, intenta enviar una cirugía a la vez.",
+                cancellationToken: ct);
+        }
+    }
+
+    private async Task ShowMultipleSurgeriesSummary(ITelegramBotClient bot, List<Appointment> appointments, long chatId, CancellationToken ct)
+    {
+        var summary = "📋 **RESUMEN DE CIRUGÍAS PROCESADAS**\n\n";
+        
+        for (int i = 0; i < appointments.Count; i++)
+        {
+            var appt = appointments[i];
+            summary += $"**{i + 1}. {appt.Cantidad} {appt.Cirugia?.ToUpper()}**\n" +
+                      $"📅 {appt.FechaHora:dd/MM/yyyy HH:mm}\n" +
+                      $"🏥 {appt.Lugar}\n" +
+                      $"👨‍⚕️ {appt.Cirujano}\n" +
+                      $"💉 {appt.Anestesiologo}\n\n";
+        }
+
+        summary += $"🔥 **Total: {appointments.Count} cirugías**\n\n" +
+                   "¿Querés confirmar todas estas cirugías? Responde **'confirmar todas'** o **'si'** para proceder.";
+
+        await MessageSender.SendWithRetry(chatId, summary, cancellationToken: ct);
+
+        // Guardar los appointments para confirmación posterior
+        // Podrías usar un diccionario temporal o una propiedad del state manager
+        foreach (var appt in appointments)
+        {
+            appt.ConfirmacionPendiente = true;
+            // Temporalmente guardamos en contextos con IDs únicos
+            var contextId = chatId + (appointments.IndexOf(appt) * 100000);
+            _stateManager.SetAppointment(contextId, appt);
+        }
+    }
+
+    private async Task HandleMultipleSurgeriesAfterValidation(ITelegramBotClient bot, MultiSurgeryParser.ParseResult parseResult, Appointment validatedAppt, long chatId, CancellationToken ct)
+    {
+        try
+        {
+            Console.WriteLine($"[MULTI-SURGERY-VALIDATED] Processing {parseResult.DetectedSurgeries.Count} surgeries with validated data");
+
+            // Informar al usuario sobre las múltiples cirugías detectadas
+            await MessageSender.SendWithRetry(chatId,
+                $"🔍 **¡Detecté {parseResult.DetectedSurgeries.Count} cirugías diferentes!**\n\n" +
+                string.Join("\n", parseResult.DetectedSurgeries.Select((s, i) => $"{i + 1}. **{s.Quantity} {s.SurgeryName.ToUpper()}**")) +
+                "\n\n✅ Todos los datos están completos, creando cada cirugía...",
+                cancellationToken: ct);
+
+            var processedAppointments = new List<Appointment>();
+            var errors = new List<string>();
+
+            // Crear cada cirugía basada en los datos ya validados
+            for (int i = 0; i < parseResult.DetectedSurgeries.Count; i++)
+            {
+                try
+                {
+                    var surgeryInfo = parseResult.DetectedSurgeries[i];
+                    
+                    // Crear nuevo appointment copiando todos los datos validados
+                    var newAppt = new Appointment
+                    {
+                        ChatId = chatId,
+                        FechaHora = validatedAppt.FechaHora,
+                        Lugar = validatedAppt.Lugar,
+                        Cirujano = validatedAppt.Cirujano,
+                        Anestesiologo = validatedAppt.Anestesiologo,
+                        
+                        // Datos específicos de esta cirugía
+                        Cirugia = surgeryInfo.SurgeryName,
+                        Cantidad = surgeryInfo.Quantity,
+                        
+                        // Notas indicando que es parte de múltiples cirugías
+                        Notas = $"Cirugía {i + 1} de {parseResult.DetectedSurgeries.Count}"
+                    };
+
+                    processedAppointments.Add(newAppt);
+                    
+                    await MessageSender.SendWithRetry(chatId,
+                        $"✅ **Cirugía {i + 1}:** {newAppt.Cantidad} {newAppt.Cirugia?.ToUpper()}",
+                        cancellationToken: ct);
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"[MULTI-SURGERY-VALIDATED] Error creating surgery {i + 1}: {ex}");
+                    errors.Add($"Cirugía {i + 1}: {parseResult.DetectedSurgeries[i].SurgeryName}");
+                }
+            }
+
+            // Mostrar resumen final y proceder con confirmación
+            if (processedAppointments.Count > 0)
+            {
+                await ShowFinalMultipleSurgeriesSummary(bot, processedAppointments, chatId, ct);
+            }
+
+            if (errors.Count > 0)
+            {
+                await MessageSender.SendWithRetry(chatId,
+                    $"⚠️ Algunas cirugías no se pudieron crear:\n{string.Join("\n", errors)}",
+                    cancellationToken: ct);
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[MULTI-SURGERY-VALIDATED] Error handling validated multiple surgeries: {ex}");
+            await MessageSender.SendWithRetry(chatId,
+                "❌ Hubo un error procesando las múltiples cirugías. Intenta nuevamente.",
+                cancellationToken: ct);
+        }
+    }
+
+    private async Task ShowFinalMultipleSurgeriesSummary(ITelegramBotClient bot, List<Appointment> appointments, long chatId, CancellationToken ct)
+    {
+        var summary = "🎯 **RESUMEN FINAL DE CIRUGÍAS**\n\n";
+        
+        for (int i = 0; i < appointments.Count; i++)
+        {
+            var appt = appointments[i];
+            summary += $"**{i + 1}. {appt.Cantidad} {appt.Cirugia?.ToUpper()}**\n" +
+                      $"📅 {appt.FechaHora:dddd, dd MMMM yyyy HH:mm}\n" +
+                      $"🏥 {appt.Lugar}\n" +
+                      $"👨‍⚕️ {appt.Cirujano}\n" +
+                      $"💉 {appt.Anestesiologo}\n\n";
+        }
+
+        summary += $"🔥 **Total: {appointments.Count} cirugías programadas**\n\n" +
+                   "🚀 **¿Confirmar TODAS las cirugías?**\n" +
+                   "Responde **'confirmar todas'** o **'si'** para crear todas en el calendario y base de datos.";
+
+        await MessageSender.SendWithRetry(chatId, summary, cancellationToken: ct);
+
+        // Guardar todas las cirugías temporalmente para confirmación global
+        for (int i = 0; i < appointments.Count; i++)
+        {
+            var appt = appointments[i];
+            appt.ConfirmacionPendiente = true;
+            
+            // Usar IDs únicos para cada cirugía
+            var tempChatId = chatId + (i + 1) * 100;
+            _stateManager.SetAppointment(tempChatId, appt);
+        }
+
+        // Marcar que hay múltiples cirugías pendientes de confirmación
+        var markerAppt = new Appointment 
+        { 
+            ChatId = chatId,
+            ConfirmacionPendiente = true,
+            Notas = $"MARKER_MULTIPLE_SURGERIES:{appointments.Count}"
+        };
+        _stateManager.SetAppointment(chatId, markerAppt);
+    }
+
+    private async Task ProcessSingleSurgeryWithLLM(ITelegramBotClient bot, Appointment tempAppt, string individualInput, long chatId, CancellationToken ct)
+    {
+        try
+        {
+            // NO enviar "Procesando..." aquí ya que se envía al inicio del flujo principal
+            Console.WriteLine($"[LLM-PROCESSOR] Processing input for surgery: {individualInput}");
+
+            // Llamar directamente al LLM sin pasar por el FlowLLMProcessor que envía mensajes
+            var llmResponse = await CallLLMDirectly(individualInput);
+            
+            if (!string.IsNullOrWhiteSpace(llmResponse))
+            {
+                // Parsear la respuesta del LLM y aplicar al appointment temporal
+                ParseLLMResponse(tempAppt, llmResponse);
+                Console.WriteLine($"[LLM-PROCESSOR] ✅ Surgery processed successfully");
+            }
+            else
+            {
+                Console.WriteLine($"[LLM-PROCESSOR] ❌ Empty response from LLM");
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[LLM-PROCESSOR] Error processing single surgery: {ex}");
+            throw; // Re-throw para que el caller maneje el error
+        }
+    }
+
+    private async Task<string> CallLLMDirectly(string input)
+    {
+        try
+        {
+            // Usar el mismo formato que usa FlowLLMProcessor pero sin enviar mensajes
+            var prompt = $@"Eres un asistente especializado en interpretar textos de agendas quirúrgicas. 
+
+Input:
+{input} FECHA_HOY={DateTime.Now:dd/MM/yyyy}
+
+Extrae ÚNICAMENTE la información disponible y devuelve un JSON con este formato:
+{{
+    ""dia"": ""DD"",
+    ""mes"": ""MM"", 
+    ""anio"": ""YYYY"",
+    ""hora"": ""HH:MM"",
+    ""lugar"": ""string"",
+    ""cirujano"": ""string"",
+    ""cirugia"": ""string"",
+    ""anestesiologo"": ""string"",
+    ""cantidad"": ""string"",
+    ""notas"": """"
+}}
+
+IMPORTANTE: Devuelve ÚNICAMENTE JSON válido, sin texto adicional.";
+
+            // Usar el método correcto que usa el sistema actual
+            var dict = await _llm.ExtractWithPublishedPromptAsync(input, DateTime.Today);
+            
+            if (dict != null && dict.Count > 0)
+            {
+                // Convertir el dictionary a JSON string para parsing
+                var jsonParts = new List<string>();
+                foreach (var kvp in dict)
+                {
+                    jsonParts.Add($"\"{kvp.Key}\": \"{kvp.Value?.Replace("\"", "\\\"")}\"");
+                }
+                
+                var jsonResponse = "{" + string.Join(", ", jsonParts) + "}";
+                return jsonResponse;
+            }
+            
+            return string.Empty;
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[LLM-DIRECT] Error calling LLM: {ex}");
+            return string.Empty;
+        }
+    }
+
+    private void ParseLLMResponse(Appointment appt, string llmResponse)
+    {
+        try
+        {
+            // Simple JSON parsing - en production podrías usar System.Text.Json
+            var jsonData = llmResponse.Trim();
+            if (!jsonData.StartsWith("{") || !jsonData.EndsWith("}"))
+            {
+                Console.WriteLine("[LLM-PARSER] Response is not valid JSON format");
+                return;
+            }
+
+            // Extraer campos básicos usando parsing simple
+            ExtractJsonField(appt, jsonData, "dia", (value) => {
+                if (int.TryParse(value, out var day)) appt.DiaExtraido = day;
+            });
+            
+            ExtractJsonField(appt, jsonData, "mes", (value) => {
+                if (int.TryParse(value, out var month)) appt.MesExtraido = month;
+            });
+            
+            ExtractJsonField(appt, jsonData, "anio", (value) => {
+                if (int.TryParse(value, out var year)) appt.AnioExtraido = year;
+            });
+            
+            ExtractJsonField(appt, jsonData, "hora", (value) => {
+                if (TimeSpan.TryParse(value, out var time)) 
+                {
+                    appt.HoraExtraida = time.Hours;
+                    appt.MinutoExtraido = time.Minutes;
+                }
+            });
+            
+            ExtractJsonField(appt, jsonData, "lugar", (value) => appt.Lugar = value);
+            ExtractJsonField(appt, jsonData, "cirujano", (value) => appt.Cirujano = value);
+            ExtractJsonField(appt, jsonData, "cirugia", (value) => appt.Cirugia = value);
+            ExtractJsonField(appt, jsonData, "anestesiologo", (value) => appt.Anestesiologo = value);
+            ExtractJsonField(appt, jsonData, "cantidad", (value) => {
+                if (int.TryParse(value, out var qty)) appt.Cantidad = qty;
+            });
+            
+            // Intentar completar la fecha/hora si es posible
+            appt.TryCompletarFechaHora();
+            
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[LLM-PARSER] Error parsing LLM response: {ex}");
+        }
+    }
+
+    private void ExtractJsonField(Appointment appt, string json, string fieldName, Action<string> setter)
+    {
+        try
+        {
+            var pattern = $"\"{fieldName}\"\\s*:\\s*\"([^\"]*?)\"";
+            var match = System.Text.RegularExpressions.Regex.Match(json, pattern);
+            
+            if (match.Success && !string.IsNullOrWhiteSpace(match.Groups[1].Value))
+            {
+                setter(match.Groups[1].Value.Trim());
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[LLM-PARSER] Error extracting field {fieldName}: {ex}");
+        }
     }
 
     // Métodos públicos para gestión

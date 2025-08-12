@@ -22,6 +22,8 @@
     <PackageReference Include="Microsoft.SemanticKernel.Core" Version="1.60.0" />
     <PackageReference Include="Newtonsoft.Json" Version="13.0.3" />
     <PackageReference Include="Npgsql" Version="7.0.6" />
+    <PackageReference Include="QuestPDF" Version="2025.7.0" />
+    <PackageReference Include="SkiaSharp" Version="3.119.0" />
     <PackageReference Include="Telegram.Bot" Version="22.6.0" />
   </ItemGroup>
 

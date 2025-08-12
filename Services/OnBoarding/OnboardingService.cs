@@ -31,22 +31,38 @@ namespace RegistroCx.Services.Onboarding
             long chatId,
             string rawText,
             string? phoneFromContact,
+            long? telegramUserId,
+            string? firstName,
+            string? lastName,
+            string? username,
+            string? languageCode,
             CancellationToken ct)
         {
             rawText ??= "";
             var lower = rawText.Trim().ToLowerInvariant();
+            
+            // Obtener o crear perfil
             var profile = await _repo.GetOrCreateAsync(chatId, ct);
+            
+            // Actualizar datos de Telegram siempre
+            await UpdateTelegramData(profile, telegramUserId, firstName, lastName, username, languageCode, ct);
 
-            // /start
-            if (lower == "/start")
+            // /start, /ayuda o ayuda
+            if (lower == "/start" || lower == "/ayuda" || lower == "ayuda")
             {
                 if (profile.State == UserState.Ready)
                 {
                     await EnviarBienvenida(bot, chatId, ct);
                     return (true, profile);
                 }
-                profile.State = UserState.NeedPhone;
-                await _repo.SaveAsync(profile, ct);
+                
+                // Solo cambiar estado si es /start (no para ayuda)
+                if (lower == "/start")
+                {
+                    profile.State = UserState.NeedPhone;
+                    await _repo.SaveAsync(profile, ct);
+                }
+                
                 await EnviarBienvenida(bot, chatId, ct);
                 return (true, profile);
             }
@@ -54,7 +70,26 @@ namespace RegistroCx.Services.Onboarding
             // compartir teléfono
             if (!string.IsNullOrWhiteSpace(phoneFromContact))
             {
-                profile.Phone = NormalizarTelefono(phoneFromContact);
+                var normalizedPhone = NormalizarTelefono(phoneFromContact);
+                
+                // TELÉFONO ES 1:1 - Verificar si ya existe un usuario con ese teléfono
+                var existingProfile = await _repo.FindByPhoneAsync(normalizedPhone, ct);
+                if (existingProfile != null && existingProfile.ChatId != chatId)
+                {
+                    // Teléfono único: actualizar ChatId del perfil existente y datos de Telegram
+                    await _repo.LinkChatIdAsync(existingProfile.ChatId, chatId, ct);
+                    existingProfile.ChatId = chatId;
+                    await UpdateTelegramData(existingProfile, telegramUserId, firstName, lastName, username, languageCode, ct);
+                    
+                    await MessageSender.SendWithRetry(chatId,
+                        $"¡Hola {existingProfile.GetTelegramDisplayName()}! 👋\n\n" +
+                        "Te reconocí por tu teléfono. ¡Qué bueno que estés acá!\n\n" +
+                        "Tu perfil ya está configurado. Podés empezar a enviarme cirugías directamente.",
+                        cancellationToken: ct);
+                    return (true, existingProfile);
+                }
+                
+                profile.Phone = normalizedPhone;
                 profile.State = UserState.NeedEmail;
                 await _repo.SaveAsync(profile, ct);
                 await MessageSender.SendWithRetry(chatId,
@@ -81,6 +116,23 @@ namespace RegistroCx.Services.Onboarding
                     }
                     if (TryExtractPhone(rawText, out var phoneManual))
                     {
+                        // TELÉFONO ES 1:1 - Verificar si ya existe un usuario con ese teléfono
+                        var existingProfile = await _repo.FindByPhoneAsync(phoneManual, ct);
+                        if (existingProfile != null && existingProfile.ChatId != chatId)
+                        {
+                            // Teléfono único: actualizar ChatId del perfil existente y datos de Telegram
+                            await _repo.LinkChatIdAsync(existingProfile.ChatId, chatId, ct);
+                            existingProfile.ChatId = chatId;
+                            await UpdateTelegramData(existingProfile, telegramUserId, firstName, lastName, username, languageCode, ct);
+                            
+                            await MessageSender.SendWithRetry(chatId,
+                                $"¡Hola {existingProfile.GetTelegramDisplayName()}! 👋\n\n" +
+                                "Te reconocí por tu teléfono. ¡Qué bueno que estés acá!\n\n" +
+                                "Tu perfil ya está configurado. Podés empezar a enviarme cirugías directamente.",
+                                cancellationToken: ct);
+                            return (true, existingProfile);
+                        }
+                        
                         profile.Phone = phoneManual;
                         profile.State = UserState.NeedEmail;
                         await _repo.SaveAsync(profile, ct);
@@ -97,7 +149,25 @@ namespace RegistroCx.Services.Onboarding
                 case UserState.NeedEmail:
                     if (Regex.IsMatch(rawText, @"^[^@\s]+@[^@\s]+\.[^@\s]+$"))
                     {
-                        profile.GoogleEmail = rawText.Trim();
+                        var email = rawText.Trim();
+                        
+                        // EMAIL ES 1:N - Verificar si ya existe un usuario con ese email de equipo
+                        var existingProfile = await _repo.FindByEmailAsync(email, ct);
+                        if (existingProfile != null && existingProfile.ChatId != chatId)
+                        {
+                            // Email compartido: crear nuevo registro copiando tokens OAuth
+                            var newProfile = await _repo.CreateProfileCopyingEmailTokensAsync(existingProfile, chatId, ct);
+                            await UpdateTelegramData(newProfile, telegramUserId, firstName, lastName, username, languageCode, ct);
+                            
+                            await MessageSender.SendWithRetry(chatId,
+                                $"¡Hola {newProfile.GetTelegramDisplayName()}! 👋\n\n" +
+                                "Te reconocí por tu email de equipo. ¡Qué bueno que estés acá!\n\n" +
+                                "Tu perfil ya está configurado con acceso al calendario compartido. Podés empezar a enviarme cirugías directamente.",
+                                cancellationToken: ct);
+                            return (true, newProfile);
+                        }
+                        
+                        profile.GoogleEmail = email;
                         profile.State = UserState.NeedOAuth;
                         await _repo.SaveAsync(profile, ct);
                         await MessageSender.SendWithRetry(chatId,
@@ -162,11 +232,29 @@ namespace RegistroCx.Services.Onboarding
             if (profile.State == UserState.Ready)
             {
             var txt =
-    @"Hola ¿cómo estás? Soy tu asistente para registrar cirugías.
-    Podemos hacer 3 cosas:
-    1) Escribí ""/semanal"" para que te envíe el resumen de esta semana.
-    2) Escribí ""/mensual"" para que te envíe todo lo que pasó en el último mes.
-    3) Mandame los datos de cualquier cirugía para que los pueda registrar en tu calendario.";
+    @"¡Hola! 👋 Soy tu asistente inteligente para registrar cirugías.
+
+📋 **¿CÓMO FUNCIONA?**
+Simplemente escribime los datos de tu cirugía en lenguaje natural. Yo entiendo y organizo automáticamente:
+
+🔹 **Ejemplo:** ""23/08 2 CERS + 1 MLD quiroga ancho uri 14hs""
+• Detectaré que son 3 cirugías diferentes
+• Extraeré fecha, hora, lugar, cirujano, etc.
+• Te pediré solo los datos que falten
+• Crearé eventos en tu Google Calendar
+
+✨ **CARACTERÍSTICAS:**
+• 🎤 Acepto mensajes de voz
+• 🔢 Proceso múltiples cirugías de una vez
+• 📅 Sincronización automática con Google Calendar
+• 💉 Invito anestesiólogos por email
+• ⚡ Edición granular (""cirugía 1 hora 16hs"")
+
+📊 **REPORTES:**
+• **/semanal** - Resumen de esta semana
+• **/mensual** - Resumen del último mes
+
+🚀 **¡Empezá ahora!** Mandame cualquier cirugía y yo me encargo del resto.";
             await MessageSender.SendWithRetry(chatId, txt, cancellationToken: ct);
             }
             else
@@ -233,5 +321,19 @@ namespace RegistroCx.Services.Onboarding
                 s.Trim(),
                 @"^[^@\s]+@[^@\s]+\.[^@\s]+$",
                 System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+
+        /// <summary>
+        /// Actualiza los datos de Telegram del perfil
+        /// </summary>
+        private async Task UpdateTelegramData(UserProfile profile, long? telegramUserId, string? firstName, string? lastName, string? username, string? languageCode, CancellationToken ct)
+        {
+            profile.TelegramUserId = telegramUserId;
+            profile.TelegramFirstName = firstName;
+            profile.TelegramLastName = lastName;
+            profile.TelegramUsername = username;
+            profile.TelegramLanguageCode = languageCode;
+            
+            await _repo.SaveAsync(profile, ct);
+        }
     }
 }

@@ -5,6 +5,7 @@ using RegistroCx.Services.Onboarding;
 using RegistroCx.Services.Extraction;
 using RegistroCx.Helpers._0Auth;
 using RegistroCx.Services;
+using RegistroCx.Services.Reports;
 using Telegram.Bot;
 using RegistroCx.ProgramServices.Services.Telegram;
 
@@ -93,12 +94,42 @@ public static class ServiceCollectionExtensions
             var openAiOptions = provider.GetRequiredService<Microsoft.Extensions.Options.IOptions<OpenAIOptions>>().Value;
             return new LLMOpenAIAssistant(openAiOptions.ApiKey);
         });
+        services.AddScoped<RegistroCx.Services.Extraction.LLMOpenAIAssistant>(provider =>
+        {
+            var openAiOptions = provider.GetRequiredService<Microsoft.Extensions.Options.IOptions<OpenAIOptions>>().Value;
+            return new RegistroCx.Services.Extraction.LLMOpenAIAssistant(openAiOptions.ApiKey);
+        });
         
         // Diccionario compartido para mantener estado entre requests
         services.AddSingleton<Dictionary<long, RegistroCx.Models.Appointment>>();
         services.AddScoped<CalendarSyncService>();
-        services.AddScoped<CirugiaFlowService>();
+        services.AddScoped<CirugiaFlowService>(provider =>
+        {
+            var llm = provider.GetRequiredService<LLMOpenAIAssistant>();
+            var pending = provider.GetRequiredService<Dictionary<long, RegistroCx.Models.Appointment>>();
+            var confirmationService = provider.GetRequiredService<AppointmentConfirmationService>();
+            var oauthService = provider.GetRequiredService<RegistroCx.Helpers._0Auth.IGoogleOAuthService>();
+            var userRepo = provider.GetRequiredService<IUserProfileRepository>();
+            var calendarSync = provider.GetRequiredService<CalendarSyncService>();
+            var appointmentRepo = provider.GetRequiredService<IAppointmentRepository>();
+            var multiSurgeryParser = provider.GetRequiredService<MultiSurgeryParser>();
+            var reportService = provider.GetRequiredService<IReportService>();
+            return new CirugiaFlowService(llm, pending, confirmationService, oauthService, userRepo, calendarSync, appointmentRepo, multiSurgeryParser, reportService);
+        });
         services.AddScoped<AppointmentConfirmationService>();
+        services.AddScoped<AudioTranscriptionService>(provider =>
+        {
+            var httpClientFactory = provider.GetRequiredService<IHttpClientFactory>();
+            var httpClient = httpClientFactory.CreateClient("general");
+            var logger = provider.GetRequiredService<ILogger<AudioTranscriptionService>>();
+            return new AudioTranscriptionService(httpClient, logger);
+        });
+        services.AddScoped<MultiSurgeryParser>(provider =>
+        {
+            var logger = provider.GetRequiredService<ILogger<MultiSurgeryParser>>();
+            var llm = provider.GetRequiredService<RegistroCx.Services.Extraction.LLMOpenAIAssistant>();
+            return new MultiSurgeryParser(logger, llm);
+        });
         services.AddScoped<IGoogleCalendarService>(provider =>
         {
             var userRepo = provider.GetRequiredService<IUserProfileRepository>();
@@ -106,8 +137,20 @@ public static class ServiceCollectionExtensions
             return new GoogleCalendarService(userRepo, oauthService);
         });
 
+        // Servicios de reportes
+        services.AddScoped<ReportDataService>(provider =>
+        {
+            var appointmentRepo = provider.GetRequiredService<IAppointmentRepository>();
+            var userRepo = provider.GetRequiredService<IUserProfileRepository>();
+            return new ReportDataService(appointmentRepo, userRepo);
+        });
+        services.AddScoped<ChartGeneratorService>();
+        services.AddScoped<PdfGeneratorService>();
+        services.AddScoped<IReportService, ReportService>();
+
         // Background services
         services.AddHostedService<TelegramBotService>();
+        services.AddHostedService<AppointmentReminderService>();
 
         return services;
     }

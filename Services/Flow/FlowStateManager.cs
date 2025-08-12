@@ -21,6 +21,12 @@ public class FlowStateManager
         return appt;
     }
 
+    public void SetAppointment(long chatId, Appointment appointment)
+    {
+        appointment.ChatId = chatId;
+        _pending[chatId] = appointment;
+    }
+
     public void ClearContext(long chatId)
     {
         if (_pending.ContainsKey(chatId))

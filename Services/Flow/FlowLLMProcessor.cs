@@ -17,8 +17,7 @@ public class FlowLLMProcessor
 
     public async Task ProcessWithLLM(ITelegramBotClient bot, Appointment appt, string rawText, long chatId, CancellationToken ct)
     {
-        // Mostrar mensaje de procesamiento
-        await MessageSender.SendWithRetry(chatId, "⏳ Procesando...", cancellationToken: ct);
+        // No enviar "Procesando..." aquí ya que se envía al inicio del flujo principal
         
         // Usar el context manager inteligente
         var (textoParaLLM, tipoOperacion) = LLMContextManager.CrearContextoInteligente(appt, rawText, DateTime.Today);

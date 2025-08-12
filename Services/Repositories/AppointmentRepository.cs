@@ -51,14 +51,15 @@ public class AppointmentRepository : IAppointmentRepository
     {
         const string sql = @"
             INSERT INTO appointments 
-                (chat_id, fecha_hora, lugar, cirujano, cirugia, cantidad, anestesiologo, calendar_event_id, calendar_synced_at, created_at)
+                (chat_id, google_email, fecha_hora, lugar, cirujano, cirugia, cantidad, anestesiologo, calendar_event_id, calendar_synced_at, reminder_sent_at, created_at)
             VALUES 
-                (@ChatId, @FechaHora, @Lugar, @Cirujano, @Cirugia, @Cantidad, @Anestesiologo, @CalendarEventId, @CalendarSyncedAt, now())
+                (@ChatId, @GoogleEmail, @FechaHora, @Lugar, @Cirujano, @Cirugia, @Cantidad, @Anestesiologo, @CalendarEventId, @CalendarSyncedAt, @ReminderSentAt, now())
             RETURNING id;";
 
         var parameters = new
         {
             ChatId = chatId,
+            GoogleEmail = appointment.GoogleEmail,
             FechaHora = appointment.FechaHora,
             Lugar = appointment.Lugar,
             Cirujano = appointment.Cirujano,
@@ -66,7 +67,8 @@ public class AppointmentRepository : IAppointmentRepository
             Cantidad = appointment.Cantidad,
             Anestesiologo = appointment.Anestesiologo,
             CalendarEventId = appointment.CalendarEventId,
-            CalendarSyncedAt = appointment.CalendarSyncedAt
+            CalendarSyncedAt = appointment.CalendarSyncedAt,
+            ReminderSentAt = appointment.ReminderSentAt
         };
 
         await using var conn = await OpenAsync(ct);
@@ -78,7 +80,7 @@ public class AppointmentRepository : IAppointmentRepository
     public async Task<Appointment?> GetByIdAsync(long id, CancellationToken ct)
     {
         const string sql = @"
-            SELECT id, chat_id, fecha_hora, lugar, cirujano, cirugia, cantidad, anestesiologo, created_at
+            SELECT id, chat_id, google_email, fecha_hora, lugar, cirujano, cirugia, cantidad, anestesiologo, calendar_event_id, calendar_synced_at, reminder_sent_at, created_at
             FROM appointments 
             WHERE id = @id;";
 
@@ -93,13 +95,18 @@ public class AppointmentRepository : IAppointmentRepository
 
         return new Appointment
         {
+            Id = result.id,
             ChatId = result.chat_id,
+            GoogleEmail = result.google_email,
             FechaHora = result.fecha_hora,
             Lugar = result.lugar,
             Cirujano = result.cirujano,
             Cirugia = result.cirugia,
             Cantidad = result.cantidad,
-            Anestesiologo = result.anestesiologo
+            Anestesiologo = result.anestesiologo,
+            CalendarEventId = result.calendar_event_id,
+            CalendarSyncedAt = result.calendar_synced_at,
+            ReminderSentAt = result.reminder_sent_at
         };
     }
 
@@ -128,7 +135,7 @@ public class AppointmentRepository : IAppointmentRepository
     public async Task<List<Appointment>> GetPendingCalendarSyncAsync(long chatId, CancellationToken ct)
     {
         const string sql = @"
-            SELECT id, chat_id, fecha_hora, lugar, cirujano, cirugia, cantidad, anestesiologo, 
+            SELECT id, chat_id, google_email, fecha_hora, lugar, cirujano, cirugia, cantidad, anestesiologo, 
                    calendar_event_id, calendar_synced_at, created_at
             FROM appointments 
             WHERE chat_id = @chatId 
@@ -144,6 +151,7 @@ public class AppointmentRepository : IAppointmentRepository
         {
             Id = result.id,
             ChatId = result.chat_id,
+            GoogleEmail = result.google_email,
             FechaHora = result.fecha_hora,
             Lugar = result.lugar,
             Cirujano = result.cirujano,
@@ -153,6 +161,98 @@ public class AppointmentRepository : IAppointmentRepository
             CalendarEventId = result.calendar_event_id,
             CalendarSyncedAt = result.calendar_synced_at
         }).ToList();
+    }
+
+    public async Task<List<Appointment>> GetAppointmentsNeedingRemindersAsync(CancellationToken ct)
+    {
+        const string sql = @"
+            SELECT id, chat_id, google_email, fecha_hora, lugar, cirujano, cirugia, cantidad, anestesiologo, 
+                   calendar_event_id, calendar_synced_at, reminder_sent_at, created_at
+            FROM appointments 
+            WHERE reminder_sent_at IS NULL 
+              AND fecha_hora > now()
+              AND fecha_hora <= now() + interval '24 hours'
+            ORDER BY fecha_hora ASC;";
+
+        await using var conn = await OpenAsync(ct);
+        var results = await conn.QueryAsync(
+            new CommandDefinition(sql, cancellationToken: ct));
+
+        return results.Select(result => new Appointment
+        {
+            Id = result.id,
+            ChatId = result.chat_id,
+            GoogleEmail = result.google_email,
+            FechaHora = result.fecha_hora,
+            Lugar = result.lugar,
+            Cirujano = result.cirujano,
+            Cirugia = result.cirugia,
+            Cantidad = result.cantidad,
+            Anestesiologo = result.anestesiologo,
+            CalendarEventId = result.calendar_event_id,
+            CalendarSyncedAt = result.calendar_synced_at,
+            ReminderSentAt = result.reminder_sent_at
+        }).ToList();
+    }
+
+    public async Task MarkReminderSentAsync(long appointmentId, CancellationToken ct)
+    {
+        const string sql = @"
+            UPDATE appointments 
+            SET reminder_sent_at = now() 
+            WHERE id = @appointmentId;";
+
+        await using var conn = await OpenAsync(ct);
+        await conn.ExecuteAsync(
+            new CommandDefinition(sql, new { appointmentId }, cancellationToken: ct));
+    }
+
+    public async Task<List<Appointment>> GetAppointmentsByDateRangeAsync(string googleEmail, DateTime startDate, DateTime endDate, CancellationToken ct)
+    {
+        const string sql = @"
+            SELECT id AS Id,
+                   chat_id AS ChatId,
+                   google_email AS GoogleEmail,
+                   fecha_hora AS FechaHora,
+                   lugar AS Lugar,
+                   cirujano AS Cirujano,
+                   cirugia AS Cirugia,
+                   cantidad AS Cantidad,
+                   anestesiologo AS Anestesiologo,
+                   calendar_event_id AS CalendarEventId,
+                   calendar_synced_at AS CalendarSyncedAt,
+                   reminder_sent_at AS ReminderSentAt
+            FROM appointments 
+            WHERE google_email = @googleEmail 
+              AND fecha_hora >= @startDate 
+              AND fecha_hora <= @endDate
+            ORDER BY fecha_hora";
+
+        await using var conn = await OpenAsync(ct);
+        var appointments = await conn.QueryAsync<Appointment>(
+            new CommandDefinition(sql, new { googleEmail, startDate, endDate }, cancellationToken: ct));
+        
+        return appointments.ToList();
+    }
+
+    public async Task<List<Appointment>> GetAppointmentsForWeekAsync(string googleEmail, DateTime weekStartDate, CancellationToken ct)
+    {
+        var weekEndDate = weekStartDate.AddDays(6).Date.AddDays(1).AddTicks(-1); // Final del día
+        return await GetAppointmentsByDateRangeAsync(googleEmail, weekStartDate, weekEndDate, ct);
+    }
+
+    public async Task<List<Appointment>> GetAppointmentsForMonthAsync(string googleEmail, int month, int year, CancellationToken ct)
+    {
+        var startDate = new DateTime(year, month, 1);
+        var endDate = startDate.AddMonths(1).AddTicks(-1);
+        return await GetAppointmentsByDateRangeAsync(googleEmail, startDate, endDate, ct);
+    }
+
+    public async Task<List<Appointment>> GetAppointmentsForYearAsync(string googleEmail, int year, CancellationToken ct)
+    {
+        var startDate = new DateTime(year, 1, 1);
+        var endDate = new DateTime(year, 12, 31, 23, 59, 59);
+        return await GetAppointmentsByDateRangeAsync(googleEmail, startDate, endDate, ct);
     }
 }
 
@@ -170,6 +270,7 @@ CREATE TABLE IF NOT EXISTS appointments (
     anestesiologo TEXT NOT NULL,
     calendar_event_id TEXT NULL,
     calendar_synced_at TIMESTAMP NULL,
+    reminder_sent_at TIMESTAMP NULL,
     created_at TIMESTAMP DEFAULT now(),
     updated_at TIMESTAMP DEFAULT now(),
     

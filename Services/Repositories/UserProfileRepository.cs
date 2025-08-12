@@ -61,6 +61,11 @@ public class UserProfileRepository : IUserProfileRepository
                                 google_refresh_token AS GoogleRefreshToken,
                                 google_token_expiry AS GoogleTokenExpiry,
                                 oauth_nonce  AS OAuthNonce,
+                                telegram_user_id AS TelegramUserId,
+                                telegram_first_name AS TelegramFirstName,
+                                telegram_last_name AS TelegramLastName,
+                                telegram_username AS TelegramUsername,
+                                telegram_language_code AS TelegramLanguageCode,
                                 created_at   AS CreatedAt,
                                 updated_at   AS UpdatedAt
                             FROM user_profiles
@@ -114,10 +119,12 @@ public class UserProfileRepository : IUserProfileRepository
         const string upsert = @"
             INSERT INTO user_profiles
                 (chat_id, state, phone, google_email, google_access_token, google_refresh_token,
-                google_token_expiry, oauth_nonce, created_at, updated_at)
+                google_token_expiry, oauth_nonce, telegram_user_id, telegram_first_name, 
+                telegram_last_name, telegram_username, telegram_language_code, created_at, updated_at)
             VALUES
                 (@ChatId, @State, @Phone, @GoogleEmail, @GoogleAccessToken, @GoogleRefreshToken,
-                @GoogleTokenExpiry, @OAuthNonce, COALESCE(@CreatedAt, now()), now())
+                @GoogleTokenExpiry, @OAuthNonce, @TelegramUserId, @TelegramFirstName,
+                @TelegramLastName, @TelegramUsername, @TelegramLanguageCode, COALESCE(@CreatedAt, now()), now())
             ON CONFLICT (chat_id) DO UPDATE SET
                 state = EXCLUDED.state,
                 phone = EXCLUDED.phone,
@@ -126,6 +133,11 @@ public class UserProfileRepository : IUserProfileRepository
                 google_refresh_token = COALESCE(EXCLUDED.google_refresh_token, user_profiles.google_refresh_token),
                 google_token_expiry = EXCLUDED.google_token_expiry,
                 oauth_nonce = EXCLUDED.oauth_nonce,
+                telegram_user_id = EXCLUDED.telegram_user_id,
+                telegram_first_name = EXCLUDED.telegram_first_name,
+                telegram_last_name = EXCLUDED.telegram_last_name,
+                telegram_username = EXCLUDED.telegram_username,
+                telegram_language_code = EXCLUDED.telegram_language_code,
                 updated_at = now();";
 
         await using var conn = await OpenAsync(ct);
@@ -146,6 +158,85 @@ public class UserProfileRepository : IUserProfileRepository
         const string sql = @"SELECT chat_id FROM user_profiles WHERE oauth_state_nonce = @nonce;";
         await using var conn = await OpenAsync(ct);
         return await conn.ExecuteScalarAsync<long?>(new CommandDefinition(sql, new { nonce }, cancellationToken: ct));
+    }
+
+    public async Task<UserProfile?> FindByPhoneAsync(string phone, CancellationToken ct = default)
+    {
+        const string sql = @"SELECT chat_id      AS ChatId,
+                                state        AS State,
+                                phone        AS Phone,
+                                google_email AS GoogleEmail,
+                                google_access_token AS GoogleAccessToken,
+                                google_refresh_token AS GoogleRefreshToken,
+                                google_token_expiry AS GoogleTokenExpiry,
+                                oauth_nonce  AS OAuthNonce,
+                                telegram_user_id AS TelegramUserId,
+                                telegram_first_name AS TelegramFirstName,
+                                telegram_last_name AS TelegramLastName,
+                                telegram_username AS TelegramUsername,
+                                telegram_language_code AS TelegramLanguageCode,
+                                created_at   AS CreatedAt,
+                                updated_at   AS UpdatedAt
+                            FROM user_profiles
+                            WHERE phone = @phone";
+        await using var conn = await OpenAsync(ct);
+        return await conn.QueryFirstOrDefaultAsync<UserProfile>(new CommandDefinition(sql, new { phone }, cancellationToken: ct));
+    }
+
+    public async Task<UserProfile?> FindByEmailAsync(string email, CancellationToken ct = default)
+    {
+        const string sql = @"SELECT chat_id      AS ChatId,
+                                state        AS State,
+                                phone        AS Phone,
+                                google_email AS GoogleEmail,
+                                google_access_token AS GoogleAccessToken,
+                                google_refresh_token AS GoogleRefreshToken,
+                                google_token_expiry AS GoogleTokenExpiry,
+                                oauth_nonce  AS OAuthNonce,
+                                created_at   AS CreatedAt,
+                                updated_at   AS UpdatedAt
+                            FROM user_profiles
+                            WHERE google_email = @email";
+        await using var conn = await OpenAsync(ct);
+        return await conn.QueryFirstOrDefaultAsync<UserProfile>(new CommandDefinition(sql, new { email }, cancellationToken: ct));
+    }
+
+    public async Task LinkChatIdAsync(long originalChatId, long newChatId, CancellationToken ct = default)
+    {
+        const string sql = @"UPDATE user_profiles 
+                            SET chat_id = @newChatId, 
+                                updated_at = now()
+                            WHERE chat_id = @originalChatId";
+        await using var conn = await OpenAsync(ct);
+        await conn.ExecuteAsync(new CommandDefinition(sql, new { originalChatId, newChatId }, cancellationToken: ct));
+    }
+
+    public async Task<UserProfile> CreateProfileCopyingEmailTokensAsync(UserProfile sourceProfile, long newChatId, CancellationToken ct = default)
+    {
+        var newProfile = new UserProfile
+        {
+            ChatId = newChatId,
+            State = UserState.Ready, // Ya tiene email y tokens válidos
+            
+            // Copiar datos del email de equipo y tokens OAuth
+            GoogleEmail = sourceProfile.GoogleEmail,
+            GoogleAccessToken = sourceProfile.GoogleAccessToken,
+            GoogleRefreshToken = sourceProfile.GoogleRefreshToken,
+            GoogleTokenExpiry = sourceProfile.GoogleTokenExpiry,
+            
+            // NO copiar teléfono (cada usuario tiene su propio teléfono)
+            Phone = null,
+            
+            // Los datos de Telegram se setean desde el OnboardingService
+            TelegramUserId = null,
+            TelegramFirstName = null,
+            TelegramLastName = null,
+            TelegramUsername = null,
+            TelegramLanguageCode = null
+        };
+
+        await SaveAsync(newProfile, ct);
+        return newProfile;
     }
 
     public async Task StoreOAuthStateAsync(long chatId, string nonce, CancellationToken ct)

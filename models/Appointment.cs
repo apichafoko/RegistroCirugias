@@ -5,6 +5,7 @@ public class Appointment
 {
     public long Id { get; set; }
     public long ChatId { get; set; }
+    public string? GoogleEmail { get; set; } // Para reportes compartidos por equipo
     public DateTime? Fecha { get; set; }
     public string? Lugar { get; set; }
     public string? Cirujano { get; set; }
@@ -17,6 +18,7 @@ public class Appointment
     // Para tracking de sincronización con Google Calendar
     public string? CalendarEventId { get; set; }
     public DateTime? CalendarSyncedAt { get; set; }
+    public DateTime? ReminderSentAt { get; set; }
     
     public enum CampoPendiente
     {
@@ -40,6 +42,7 @@ public class Appointment
     // Campos para manejo de email de anestesiólogo
     public string? PendingEventId { get; set; }
     public string? PendingAnesthesiologistName { get; set; }
+    public bool ReadyForCleanup { get; set; } = false;
 
     // Propiedad para compatibilidad
     public DateTime? FechaHora 

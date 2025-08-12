@@ -36,7 +36,8 @@ public class AppointmentConfirmationService
         ITelegramBotClient bot, 
         Appointment appt, 
         long chatId, 
-        CancellationToken ct)
+        CancellationToken ct,
+        bool silent = false)
     {
         long appointmentId = 0;
         string? eventId = null;
@@ -57,11 +58,15 @@ public class AppointmentConfirmationService
             Console.WriteLine($"[CONFIRMATION] ✅ Atomic transaction successful - DB ID: {appointmentId}, Calendar ID: {eventId}");
 
             // 3. Manejar invitación del anestesiólogo (no crítico, puede fallar)
-            await HandleAnesthesiologistInvitation(bot, appt, chatId, eventId, ct);
+            await HandleAnesthesiologistInvitation(bot, appt, chatId, eventId, ct, silent);
 
-            await MessageSender.SendWithRetry(chatId,
-                "✅ Confirmado. El evento fue creado en el calendario con recordatorio de 24 horas y guardado en la base de datos.",
-                cancellationToken: ct);
+            // Solo enviar mensaje de confirmación individual si no está en modo silencioso
+            if (!silent)
+            {
+                await MessageSender.SendWithRetry(chatId,
+                    "✅ Confirmado. El evento fue creado en el calendario con recordatorio de 24 horas y guardado en la base de datos.",
+                    cancellationToken: ct);
+            }
 
             return true;
         }
@@ -74,11 +79,14 @@ public class AppointmentConfirmationService
             {
                 Console.WriteLine($"[CONFIRMATION] OAuth error - keeping appointment {appointmentId} but unable to create calendar event");
                 
-                await MessageSender.SendWithRetry(chatId,
-                    "✅ Appointment confirmado y guardado en la base de datos.\n\n" +
-                    "⚠️ No se pudo crear el evento en Google Calendar porque tu autorización expiró.\n\n" +
-                    "Para crear eventos de calendario en el futuro, escribe /autorizar para renovar el acceso.",
-                    cancellationToken: ct);
+                if (!silent)
+                {
+                    await MessageSender.SendWithRetry(chatId,
+                        "✅ Appointment confirmado y guardado en la base de datos.\n\n" +
+                        "⚠️ No se pudo crear el evento en Google Calendar porque tu autorización expiró.\n\n" +
+                        "Para crear eventos de calendario en el futuro, escribe /autorizar para renovar el acceso.",
+                        cancellationToken: ct);
+                }
                 
                 return true; // El appointment se guardó exitosamente
             }
@@ -86,9 +94,12 @@ public class AppointmentConfirmationService
             // Para otros errores, hacer rollback completo
             await RollbackTransaction(appointmentId > 0 ? appointmentId : null, eventId, chatId, ct);
             
-            await MessageSender.SendWithRetry(chatId,
-                "❌ Hubo un error al procesar la confirmación. Por favor, intenta nuevamente.",
-                cancellationToken: ct);
+            if (!silent)
+            {
+                await MessageSender.SendWithRetry(chatId,
+                    "❌ Hubo un error al procesar la confirmación. Por favor, intenta nuevamente.",
+                    cancellationToken: ct);
+            }
             return false;
         }
     }
@@ -99,9 +110,13 @@ public class AppointmentConfirmationService
         {
             Console.WriteLine($"[DB] Saving appointment for chat {chatId}: {appt.Cirugia} on {appt.FechaHora}");
             
+            // Obtener el GoogleEmail del usuario para reportes compartidos por equipo
+            var userProfile = await _userRepo.GetOrCreateAsync(chatId, ct);
+            appt.GoogleEmail = userProfile.GoogleEmail;
+            
             var appointmentId = await _appointmentRepo.SaveAsync(appt, chatId, ct);
             
-            Console.WriteLine($"[DB] ✅ Appointment saved with ID: {appointmentId}");
+            Console.WriteLine($"[DB] ✅ Appointment saved with ID: {appointmentId} (GoogleEmail: {appt.GoogleEmail})");
             return appointmentId;
         }
         catch (Exception ex)
@@ -129,7 +144,7 @@ public class AppointmentConfirmationService
         }
     }
 
-    private async Task HandleAnesthesiologistInvitation(ITelegramBotClient bot, Appointment appt, long chatId, string eventId, CancellationToken ct)
+    private async Task HandleAnesthesiologistInvitation(ITelegramBotClient bot, Appointment appt, long chatId, string eventId, CancellationToken ct, bool silent = false)
     {
         try
         {
@@ -143,32 +158,49 @@ public class AppointmentConfirmationService
                 // 2. Si tiene email, enviar invitación del calendario
                 var inviteSent = await _calendarService.SendCalendarInviteAsync(eventId, email, chatId, ct);
                 
-                if (inviteSent)
+                // Solo enviar mensajes individuales si no está en modo silencioso
+                if (!silent)
                 {
-                    await MessageSender.SendWithRetry(chatId,
-                        $"📧 Invitación de calendario enviada a {appt.Anestesiologo} ({email})",
-                        cancellationToken: ct);
-                }
-                else
-                {
-                    await MessageSender.SendWithRetry(chatId,
-                        $"⚠️ No pude enviar la invitación a {appt.Anestesiologo} ({email}). Podés compartir el evento manualmente.",
-                        cancellationToken: ct);
+                    if (inviteSent)
+                    {
+                        await MessageSender.SendWithRetry(chatId,
+                            $"📧 Invitación de calendario enviada a {appt.Anestesiologo} ({email})",
+                            cancellationToken: ct);
+                    }
+                    else
+                    {
+                        await MessageSender.SendWithRetry(chatId,
+                            $"⚠️ No pude enviar la invitación a {appt.Anestesiologo} ({email}). Podés compartir el evento manualmente.",
+                            cancellationToken: ct);
+                    }
                 }
             }
             else
             {
-                // 3. Si no tiene email, pedírselo al usuario
-                await RequestAnesthesiologistEmail(bot, appt, chatId, eventId, ct);
+                // 3. Si no tiene email, marcarlo para solicitud posterior (no pedirlo inmediatamente en modo silencioso)
+                if (!silent)
+                {
+                    await RequestAnesthesiologistEmail(bot, appt, chatId, eventId, ct);
+                }
+                else
+                {
+                    // En modo silencioso, solo marcar que necesita email
+                    appt.CampoQueFalta = Appointment.CampoPendiente.EsperandoEmailAnestesiologo;
+                    appt.PendingEventId = eventId;
+                    appt.PendingAnesthesiologistName = appt.Anestesiologo;
+                }
             }
         }
         catch (Exception ex)
         {
             Console.WriteLine($"[ANESTHESIOLOGIST] Error handling invitation: {ex}");
             // No lanzar error aquí, la confirmación principal debe continuar
-            await MessageSender.SendWithRetry(chatId,
-                $"⚠️ Hubo un problema al enviar la invitación a {appt.Anestesiologo}. El evento está creado pero podés compartirlo manualmente.",
-                cancellationToken: ct);
+            if (!silent)
+            {
+                await MessageSender.SendWithRetry(chatId,
+                    $"⚠️ Hubo un problema al enviar la invitación a {appt.Anestesiologo}. El evento está creado pero podés compartirlo manualmente.",
+                    cancellationToken: ct);
+            }
         }
     }
 
@@ -304,6 +336,9 @@ public class AppointmentConfirmationService
         appt.CampoQueFalta = Appointment.CampoPendiente.Ninguno;
         appt.PendingEventId = null;
         appt.PendingAnesthesiologistName = null;
+        
+        // IMPORTANTE: Marcar que el appointment debe ser limpiado
+        appt.ReadyForCleanup = true;
     }
 
     private static bool IsValidEmail(string email)

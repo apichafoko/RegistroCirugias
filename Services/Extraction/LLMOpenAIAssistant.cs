@@ -22,6 +22,10 @@ namespace RegistroCx.Services.Extraction
         // Copia estos valores exactamente desde tu Dashboard → Deploy → Prompt ID / Version
         private const string PromptId      = "pmpt_688fff5af7e48190bdae049dcfdc44a5038f25fca90d0503";
         private const string PromptVersion = "3";
+        
+        // Prompt para detección de múltiples cirugías (actualizado para evitar duplicados)
+        private const string MultiSurgeryPromptId      = "pmpt_689a0e6ad6988193a39feb176a30b80d0437b8506c01cf3d";
+        private const string MultiSurgeryPromptVersion = "1";
 
         public LLMOpenAIAssistant(string apiKey)
         {
@@ -111,6 +115,79 @@ namespace RegistroCx.Services.Extraction
                 throw new Exception("Falló el parseo del JSON del assistant.");
 
             return dict;
+        }
+        
+        /// <summary>
+        /// Detecta múltiples cirugías usando el prompt específico para múltiples cirugías
+        /// </summary>
+        public async Task<Dictionary<string, string>> ExtractMultipleSurgeriesAsync(string userText)
+        {
+            var body = new
+            {
+                prompt = new { id = MultiSurgeryPromptId, version = MultiSurgeryPromptVersion },
+                input  = userText
+            };
+
+           // Serializar y depurar el JSON
+            var jsonBody = JsonSerializer.Serialize(body, _jsonOptions);
+            Console.WriteLine($"[MULTI-SURGERY-LLM] Request JSON: {jsonBody}");
+
+            var content = new StringContent(jsonBody, Encoding.UTF8, "application/json");
+            var response = await _http.PostAsync("/v1/responses", content);
+            var responseText = await response.Content.ReadAsStringAsync();
+
+            Console.WriteLine($"[MULTI-SURGERY-LLM] Full Response: {responseText}");
+            
+            // Debug: let's see the structure
+            try
+            {
+                var debugDoc = JsonDocument.Parse(responseText);
+                Console.WriteLine($"[MULTI-SURGERY-LLM] Root properties: {string.Join(", ", debugDoc.RootElement.EnumerateObject().Select(p => p.Name))}");
+            }
+            catch (Exception debugEx)
+            {
+                Console.WriteLine($"[MULTI-SURGERY-LLM] Debug parsing failed: {debugEx.Message}");
+            }
+
+            if (!response.IsSuccessStatusCode)
+            {
+                throw new Exception($"Error from OpenAI API: {response.StatusCode} - {responseText}");
+            }
+
+            // Parsear la respuesta usando la misma estructura que el método original
+            var jsonDoc = JsonDocument.Parse(responseText);
+            string? assistantText = null;
+
+            // Buscar en 'output' el message (igual que el método original)
+            if (jsonDoc.RootElement.TryGetProperty("output", out var outputArray))
+            {
+                foreach (var outEntry in outputArray.EnumerateArray())
+                {
+                    if (outEntry.TryGetProperty("type", out var typeProperty) && 
+                        typeProperty.GetString() == "message" &&
+                        outEntry.TryGetProperty("content", out var contentArray))
+                    {
+                        foreach (var part in contentArray.EnumerateArray())
+                        {
+                            if (part.TryGetProperty("type", out var partTypeProperty) &&
+                                partTypeProperty.GetString() == "output_text" &&
+                                part.TryGetProperty("text", out var textProperty))
+                            {
+                                assistantText = textProperty.GetString()!;
+                                break;
+                            }
+                        }
+                        if (assistantText != null) break;
+                    }
+                }
+            }
+            if (assistantText == null)
+                throw new Exception("No se encontró 'output_text' en la respuesta del prompt de múltiples cirugías.");
+
+            Console.WriteLine($"[MULTI-SURGERY-LLM] Assistant text to parse: {assistantText.Trim()}");
+            
+            // Para múltiples cirugías, necesitamos retornar el JSON raw, no parseado
+            return new Dictionary<string, string> { ["raw_response"] = assistantText.Trim() };
         }
     }
 }

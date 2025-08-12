@@ -10,6 +10,11 @@ namespace RegistroCx.Services.Onboarding
             long chatId,
             string rawText,
             string? phoneFromContact,
+            long? telegramUserId,
+            string? firstName,
+            string? lastName,
+            string? username,
+            string? languageCode,
             CancellationToken ct);
     }
 }
