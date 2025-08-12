@@ -61,11 +61,6 @@ public class UserProfileRepository : IUserProfileRepository
                                 google_refresh_token AS GoogleRefreshToken,
                                 google_token_expiry AS GoogleTokenExpiry,
                                 oauth_nonce  AS OAuthNonce,
-                                telegram_user_id AS TelegramUserId,
-                                telegram_first_name AS TelegramFirstName,
-                                telegram_last_name AS TelegramLastName,
-                                telegram_username AS TelegramUsername,
-                                telegram_language_code AS TelegramLanguageCode,
                                 created_at   AS CreatedAt,
                                 updated_at   AS UpdatedAt
                             FROM user_profiles
@@ -119,12 +114,10 @@ public class UserProfileRepository : IUserProfileRepository
         const string upsert = @"
             INSERT INTO user_profiles
                 (chat_id, state, phone, google_email, google_access_token, google_refresh_token,
-                google_token_expiry, oauth_nonce, telegram_user_id, telegram_first_name, 
-                telegram_last_name, telegram_username, telegram_language_code, created_at, updated_at)
+                google_token_expiry, oauth_nonce, created_at, updated_at)
             VALUES
                 (@ChatId, @State, @Phone, @GoogleEmail, @GoogleAccessToken, @GoogleRefreshToken,
-                @GoogleTokenExpiry, @OAuthNonce, @TelegramUserId, @TelegramFirstName,
-                @TelegramLastName, @TelegramUsername, @TelegramLanguageCode, COALESCE(@CreatedAt, now()), now())
+                @GoogleTokenExpiry, @OAuthNonce, COALESCE(@CreatedAt, now()), now())
             ON CONFLICT (chat_id) DO UPDATE SET
                 state = EXCLUDED.state,
                 phone = EXCLUDED.phone,
@@ -133,11 +126,6 @@ public class UserProfileRepository : IUserProfileRepository
                 google_refresh_token = COALESCE(EXCLUDED.google_refresh_token, user_profiles.google_refresh_token),
                 google_token_expiry = EXCLUDED.google_token_expiry,
                 oauth_nonce = EXCLUDED.oauth_nonce,
-                telegram_user_id = EXCLUDED.telegram_user_id,
-                telegram_first_name = EXCLUDED.telegram_first_name,
-                telegram_last_name = EXCLUDED.telegram_last_name,
-                telegram_username = EXCLUDED.telegram_username,
-                telegram_language_code = EXCLUDED.telegram_language_code,
                 updated_at = now();";
 
         await using var conn = await OpenAsync(ct);
@@ -170,11 +158,6 @@ public class UserProfileRepository : IUserProfileRepository
                                 google_refresh_token AS GoogleRefreshToken,
                                 google_token_expiry AS GoogleTokenExpiry,
                                 oauth_nonce  AS OAuthNonce,
-                                telegram_user_id AS TelegramUserId,
-                                telegram_first_name AS TelegramFirstName,
-                                telegram_last_name AS TelegramLastName,
-                                telegram_username AS TelegramUsername,
-                                telegram_language_code AS TelegramLanguageCode,
                                 created_at   AS CreatedAt,
                                 updated_at   AS UpdatedAt
                             FROM user_profiles
@@ -227,12 +210,7 @@ public class UserProfileRepository : IUserProfileRepository
             // NO copiar teléfono (cada usuario tiene su propio teléfono)
             Phone = null,
             
-            // Los datos de Telegram se setean desde el OnboardingService
-            TelegramUserId = null,
-            TelegramFirstName = null,
-            TelegramLastName = null,
-            TelegramUsername = null,
-            TelegramLanguageCode = null
+            // Los datos de Telegram se manejan en la tabla usuarios_telegram por separado
         };
 
         await SaveAsync(newProfile, ct);

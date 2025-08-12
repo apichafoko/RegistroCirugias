@@ -21,7 +21,7 @@ namespace RegistroCx.Services.Extraction
 
         // Copia estos valores exactamente desde tu Dashboard → Deploy → Prompt ID / Version
         private const string PromptId      = "pmpt_688fff5af7e48190bdae049dcfdc44a5038f25fca90d0503";
-        private const string PromptVersion = "3";
+        private const string PromptVersion = "4";
         
         // Prompt para detección de múltiples cirugías (actualizado para evitar duplicados)
         private const string MultiSurgeryPromptId      = "pmpt_689a0e6ad6988193a39feb176a30b80d0437b8506c01cf3d";

@@ -131,13 +131,17 @@ public class GoogleCalendarService : IGoogleCalendarService
 
     private string BuildEventDescription(Appointment appointment)
     {
+        var anesthesiologistLine = string.IsNullOrEmpty(appointment.Anestesiologo) ?
+            "💉 Anestesiólogo: Sin asignar" :
+            $"💉 Anestesiólogo: {appointment.Anestesiologo}";
+            
         return $@"Detalles de la cirugía:
 
 🏥 Lugar: {appointment.Lugar}
 👨‍⚕️ Cirujano: {appointment.Cirujano}
 🔬 Procedimiento: {appointment.Cirugia}
 📊 Cantidad: {appointment.Cantidad}
-💉 Anestesiólogo: {appointment.Anestesiologo}
+{anesthesiologistLine}
 
 📅 Fecha y hora: {appointment.FechaHora:dddd, dd MMMM yyyy HH:mm}
 

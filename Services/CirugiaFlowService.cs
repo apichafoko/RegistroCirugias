@@ -67,7 +67,8 @@ public class CirugiaFlowService
         CalendarSyncService calendarSync,
         IAppointmentRepository appointmentRepo,
         MultiSurgeryParser multiSurgeryParser,
-        IReportService reportService)
+        IReportService reportService,
+        IAnesthesiologistSearchService anesthesiologistSearchService)
     {
         _llm = llm;
         _pending = pending;
@@ -75,21 +76,21 @@ public class CirugiaFlowService
         _multiSurgeryParser = multiSurgeryParser;
         _stateManager = new FlowStateManager(_pending);
         _messageHandler = new FlowMessageHandler(oauthService, userRepo, calendarSync, appointmentRepo, reportService);
-        _wizardHandler = new FlowWizardHandler();
+        _wizardHandler = new FlowWizardHandler(anesthesiologistSearchService, userRepo);
         _llmProcessor = new FlowLLMProcessor(llm);
     }
 
     public async Task HandleAsync(ITelegramBotClient bot, long chatId, string rawText, CancellationToken ct)
     {
-        // INMEDIATO: Enviar mensaje de "Procesando..." para reducir ansiedad del usuario
-        await MessageSender.SendWithRetry(chatId, "⏳ Procesando...", cancellationToken: ct);
-        
-        // Manejar comandos especiales
+        // Manejar comandos especiales primero (sin enviar "Procesando..." ya que el otro servicio lo hará)
         if (await _messageHandler.HandleSpecialCommandsAsync(bot, chatId, rawText, ct))
         {
             _stateManager.ClearContext(chatId);
             return;
         }
+        
+        // INMEDIATO: Enviar mensaje de "Procesando..." para reducir ansiedad del usuario
+        await MessageSender.SendWithRetry(chatId, "⏳ Procesando...", cancellationToken: ct);
 
         // Obtener o crear appointment
         var appt = _stateManager.GetOrCreateAppointment(chatId);
@@ -138,6 +139,29 @@ public class CirugiaFlowService
         }
 
         Console.WriteLine("[FLOW] Going to LLM - no other handler processed the message");
+        
+        // VALIDACIÓN: Verificar si el texto tiene contexto médico relevante
+        if (!RegistroCx.Helpers.MedicalContextValidator.HasMedicalContext(rawText))
+        {
+            Console.WriteLine($"[FLOW] ❌ Non-medical context detected: {rawText}");
+            
+            // Si es texto claramente inconexo (como "perro verde"), dar mensaje específico
+            if (RegistroCx.Helpers.MedicalContextValidator.IsDisconnectedWords(rawText))
+            {
+                var specificMessage = RegistroCx.Helpers.MedicalContextValidator.GenerateNonMedicalMessage(rawText);
+                await MessageSender.SendWithRetry(chatId, specificMessage, cancellationToken: ct);
+            }
+            else
+            {
+                // Para otros casos, mostrar ayuda general
+                var helpMessage = RegistroCx.Helpers.MedicalContextValidator.GenerateHelpMessage();
+                await MessageSender.SendWithRetry(chatId, helpMessage, cancellationToken: ct);
+            }
+            
+            // Limpiar contexto para empezar de nuevo
+            _stateManager.ClearContext(chatId);
+            return;
+        }
         
         // NUEVO: Detectar múltiples cirugías ANTES del procesamiento LLM
         if (appt.HistoricoInputs.Count == 1) // Solo para el primer input del usuario

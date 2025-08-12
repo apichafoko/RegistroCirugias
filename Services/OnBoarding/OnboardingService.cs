@@ -16,13 +16,16 @@ namespace RegistroCx.Services.Onboarding
     public class OnboardingService : IOnboardingService
     {
         private readonly IUserProfileRepository _repo;
+        private readonly IUsuarioTelegramRepository _telegramRepo;
         private readonly IGoogleOAuthService _oauth;
 
         public OnboardingService(
             IUserProfileRepository repo,
+            IUsuarioTelegramRepository telegramRepo,
             IGoogleOAuthService oauth)
         {
             _repo = repo;
+            _telegramRepo = telegramRepo;
             _oauth = oauth;
         }
 
@@ -47,8 +50,8 @@ namespace RegistroCx.Services.Onboarding
             // Actualizar datos de Telegram siempre
             await UpdateTelegramData(profile, telegramUserId, firstName, lastName, username, languageCode, ct);
 
-            // /start, /ayuda o ayuda
-            if (lower == "/start" || lower == "/ayuda" || lower == "ayuda")
+            // /start, /ayuda o ayuda (incluyendo variaciones con errores tipográficos)
+            if (lower == "/start" || lower == "/ayuda" || lower == "ayuda" || IsSimilarToHelp(lower))
             {
                 if (profile.State == UserState.Ready)
                 {
@@ -82,7 +85,7 @@ namespace RegistroCx.Services.Onboarding
                     await UpdateTelegramData(existingProfile, telegramUserId, firstName, lastName, username, languageCode, ct);
                     
                     await MessageSender.SendWithRetry(chatId,
-                        $"¡Hola {existingProfile.GetTelegramDisplayName()}! 👋\n\n" +
+                        $"¡Hola {await GetTelegramDisplayName(existingProfile.ChatId, ct)}! 👋\n\n" +
                         "Te reconocí por tu teléfono. ¡Qué bueno que estés acá!\n\n" +
                         "Tu perfil ya está configurado. Podés empezar a enviarme cirugías directamente.",
                         cancellationToken: ct);
@@ -126,7 +129,7 @@ namespace RegistroCx.Services.Onboarding
                             await UpdateTelegramData(existingProfile, telegramUserId, firstName, lastName, username, languageCode, ct);
                             
                             await MessageSender.SendWithRetry(chatId,
-                                $"¡Hola {existingProfile.GetTelegramDisplayName()}! 👋\n\n" +
+                                $"¡Hola {await GetTelegramDisplayName(existingProfile.ChatId, ct)}! 👋\n\n" +
                                 "Te reconocí por tu teléfono. ¡Qué bueno que estés acá!\n\n" +
                                 "Tu perfil ya está configurado. Podés empezar a enviarme cirugías directamente.",
                                 cancellationToken: ct);
@@ -160,7 +163,7 @@ namespace RegistroCx.Services.Onboarding
                             await UpdateTelegramData(newProfile, telegramUserId, firstName, lastName, username, languageCode, ct);
                             
                             await MessageSender.SendWithRetry(chatId,
-                                $"¡Hola {newProfile.GetTelegramDisplayName()}! 👋\n\n" +
+                                $"¡Hola {await GetTelegramDisplayName(newProfile.ChatId, ct)}! 👋\n\n" +
                                 "Te reconocí por tu email de equipo. ¡Qué bueno que estés acá!\n\n" +
                                 "Tu perfil ya está configurado con acceso al calendario compartido. Podés empezar a enviarme cirugías directamente.",
                                 cancellationToken: ct);
@@ -327,13 +330,91 @@ Simplemente escribime los datos de tu cirugía en lenguaje natural. Yo entiendo 
         /// </summary>
         private async Task UpdateTelegramData(UserProfile profile, long? telegramUserId, string? firstName, string? lastName, string? username, string? languageCode, CancellationToken ct)
         {
-            profile.TelegramUserId = telegramUserId;
-            profile.TelegramFirstName = firstName;
-            profile.TelegramLastName = lastName;
-            profile.TelegramUsername = username;
-            profile.TelegramLanguageCode = languageCode;
+            if (telegramUserId.HasValue)
+            {
+                await _telegramRepo.UpdateTelegramDataAsync(
+                    profile.ChatId,
+                    telegramUserId.Value,
+                    firstName,
+                    username,
+                    ct: ct);
+            }
+        }
+
+        /// <summary>
+        /// Obtiene el nombre de display de Telegram para un usuario
+        /// </summary>
+        private async Task<string> GetTelegramDisplayName(long chatId, CancellationToken ct)
+        {
+            var telegramUser = await _telegramRepo.GetByChatIdAsync(chatId, ct);
+            return telegramUser?.GetDisplayName() ?? "Usuario";
+        }
+
+        /// <summary>
+        /// Detecta si el texto es similar a "ayuda" con errores tipográficos comunes
+        /// </summary>
+        private static bool IsSimilarToHelp(string input)
+        {
+            if (string.IsNullOrWhiteSpace(input)) return false;
+
+            var normalized = input.Trim().ToLowerInvariant();
             
-            await _repo.SaveAsync(profile, ct);
+            // Patrones comunes de errores tipográficos para "ayuda"
+            var helpPatterns = new[]
+            {
+                "aayyda",    // Error reportado por el usuario
+                "ayyda",     // Falta una 'a'
+                "ayda",      // Faltan letras
+                "auda",      // Falta 'y'
+                "ayuuda",    // Doble 'u'
+                "ayudda",    // Doble 'd'
+                "hayuda",    // 'h' extra
+                "ajuda",     // 'j' en lugar de 'y'
+                "alluda",    // Confusión de teclas
+                "help",      // En inglés
+                "helpme",    // En inglés
+            };
+
+            return helpPatterns.Any(pattern => 
+                normalized == pattern || 
+                (normalized.Length >= 3 && CalculateLevenshteinDistance(normalized, "ayuda") <= 2));
+        }
+
+        /// <summary>
+        /// Calcula la distancia de Levenshtein entre dos strings para detectar similitudes
+        /// </summary>
+        private static int CalculateLevenshteinDistance(string source, string target)
+        {
+            if (string.IsNullOrEmpty(source))
+                return string.IsNullOrEmpty(target) ? 0 : target.Length;
+            
+            if (string.IsNullOrEmpty(target))
+                return source.Length;
+
+            var sourceLength = source.Length;
+            var targetLength = target.Length;
+
+            var distance = new int[sourceLength + 1, targetLength + 1];
+
+            for (int i = 1; i <= sourceLength; i++)
+                distance[i, 0] = i;
+
+            for (int j = 1; j <= targetLength; j++)
+                distance[0, j] = j;
+
+            for (int i = 1; i <= sourceLength; i++)
+            {
+                for (int j = 1; j <= targetLength; j++)
+                {
+                    var cost = (target[j - 1] == source[i - 1]) ? 0 : 1;
+
+                    distance[i, j] = Math.Min(
+                        Math.Min(distance[i - 1, j] + 1, distance[i, j - 1] + 1),
+                        distance[i - 1, j - 1] + cost);
+                }
+            }
+
+            return distance[sourceLength, targetLength];
         }
     }
 }

@@ -17,13 +17,11 @@ public class ChartGeneratorService
         
         canvas.Clear(SKColors.White);
         
-        // Preparar datos para gráfico de barras
-        var topSurgeries = surgeryTypeData.OrderByDescending(x => x.Value).Take(8).ToList();
-        var maxValue = topSurgeries.Max(x => x.Value);
+        // Preparar datos para gráfico de torta
+        var topSurgeries = surgeryTypeData.OrderByDescending(x => x.Value).Take(6).ToList();
+        var totalValue = topSurgeries.Sum(x => x.Value);
         
-        // Configuración del gráfico
-        var chartArea = new SKRect(80, 40, width - 40, height - 80);
-        var barWidth = (chartArea.Width - 40) / topSurgeries.Count;
+        if (totalValue == 0) return GenerateNoDataChart(width, height);
         
         // Dibujar título
         using var titlePaint = new SKPaint
@@ -38,36 +36,59 @@ public class ChartGeneratorService
         titlePaint.MeasureText("Cirugías por Tipo", ref titleBounds);
         canvas.DrawText("Cirugías por Tipo", (width - titleBounds.Width) / 2, 25, titlePaint);
         
-        // Dibujar barras
-        using var barPaint = new SKPaint
+        // Configurar área del gráfico de torta
+        var chartSize = Math.Min(width - 160, height - 80); // Dejar espacio para leyenda
+        var centerX = chartSize / 2 + 20;
+        var centerY = height / 2;
+        var radius = chartSize / 2 - 10;
+        
+        // Colores para las secciones
+        var colors = new[]
         {
-            Color = SKColor.Parse("#4A90E2"),
-            IsAntialias = true
+            SKColor.Parse("#4A90E2"), // Azul
+            SKColor.Parse("#50C878"), // Verde
+            SKColor.Parse("#FF6B6B"), // Rojo
+            SKColor.Parse("#FFD93D"), // Amarillo
+            SKColor.Parse("#9B59B6"), // Púrpura
+            SKColor.Parse("#FFA500")  // Naranja
         };
         
         using var textPaint = new SKPaint
         {
             Color = SKColors.Black,
-            TextSize = 10,
+            TextSize = 12,
             IsAntialias = true
         };
+        
+        // Dibujar secciones de la torta
+        float currentAngle = -90; // Empezar arriba
         
         for (int i = 0; i < topSurgeries.Count; i++)
         {
             var surgery = topSurgeries[i];
-            var barHeight = (surgery.Value / (float)maxValue) * (chartArea.Height - 40);
-            var x = chartArea.Left + i * barWidth + 10;
-            var y = chartArea.Bottom - barHeight;
+            var percentage = (surgery.Value / (float)totalValue) * 100;
+            var sweepAngle = (surgery.Value / (float)totalValue) * 360;
             
-            // Dibujar barra
-            canvas.DrawRect(x, y, barWidth - 20, barHeight, barPaint);
+            using var sectionPaint = new SKPaint
+            {
+                Color = colors[i % colors.Length],
+                IsAntialias = true
+            };
             
-            // Dibujar valor encima de la barra
-            canvas.DrawText(surgery.Value.ToString(), x + (barWidth - 20) / 2 - 10, y - 5, textPaint);
+            // Dibujar sección de la torta
+            var rect = new SKRect(centerX - radius, centerY - radius, centerX + radius, centerY + radius);
+            canvas.DrawArc(rect, currentAngle, sweepAngle, true, sectionPaint);
             
-            // Dibujar etiqueta (rotada si es necesaria)
-            var label = surgery.Key.Length > 8 ? surgery.Key.Substring(0, 8) + "..." : surgery.Key;
-            canvas.DrawText(label, x, chartArea.Bottom + 15, textPaint);
+            // Dibujar leyenda
+            var legendY = 50 + i * 25;
+            var legendRect = new SKRect(centerX + radius + 20, legendY - 8, centerX + radius + 35, legendY + 8);
+            canvas.DrawRect(legendRect, sectionPaint);
+            
+            var legendText = $"{surgery.Key}: {surgery.Value} ({percentage:F1}%)";
+            if (legendText.Length > 30) legendText = legendText.Substring(0, 27) + "...";
+            canvas.DrawText(legendText, centerX + radius + 45, legendY + 4, textPaint);
+            
+            currentAngle += sweepAngle;
         }
         
         // Obtener imagen como bytes
@@ -88,11 +109,7 @@ public class ChartGeneratorService
         var topSurgeons = surgeonStats.OrderByDescending(x => x.TotalSurgeries).Take(6).ToList();
         if (!topSurgeons.Any()) return GenerateNoDataChart(width, height);
         
-        var maxValue = topSurgeons.Max(x => x.TotalSurgeries);
-        
-        // Configuración del gráfico
-        var chartArea = new SKRect(100, 40, width - 40, height - 80);
-        var barHeight = (chartArea.Height - 40) / topSurgeons.Count;
+        var totalSurgeries = topSurgeons.Sum(x => x.TotalSurgeries);
         
         // Dibujar título
         using var titlePaint = new SKPaint
@@ -107,35 +124,59 @@ public class ChartGeneratorService
         titlePaint.MeasureText("Top Cirujanos por Volumen", ref titleBounds);
         canvas.DrawText("Top Cirujanos por Volumen", (width - titleBounds.Width) / 2, 25, titlePaint);
         
-        // Dibujar barras horizontales
-        using var barPaint = new SKPaint
+        // Configurar área del gráfico de torta
+        var chartSize = Math.Min(width - 160, height - 80); // Dejar espacio para leyenda
+        var centerX = chartSize / 2 + 20;
+        var centerY = height / 2;
+        var radius = chartSize / 2 - 10;
+        
+        // Colores para las secciones
+        var colors = new[]
         {
-            Color = SKColor.Parse("#28A745"),
-            IsAntialias = true
+            SKColor.Parse("#28A745"), // Verde
+            SKColor.Parse("#007BFF"), // Azul
+            SKColor.Parse("#FFC107"), // Amarillo
+            SKColor.Parse("#DC3545"), // Rojo
+            SKColor.Parse("#6F42C1"), // Púrpura
+            SKColor.Parse("#20C997")  // Turquesa
         };
         
         using var textPaint = new SKPaint
         {
             Color = SKColors.Black,
-            TextSize = 10,
+            TextSize = 11,
             IsAntialias = true
         };
+        
+        // Dibujar secciones de la torta
+        float currentAngle = -90; // Empezar arriba
         
         for (int i = 0; i < topSurgeons.Count; i++)
         {
             var surgeon = topSurgeons[i];
-            var barWidth = (surgeon.TotalSurgeries / (float)maxValue) * (chartArea.Width - 120);
-            var y = chartArea.Top + i * barHeight + 10;
+            var percentage = (surgeon.TotalSurgeries / (float)totalSurgeries) * 100;
+            var sweepAngle = (surgeon.TotalSurgeries / (float)totalSurgeries) * 360;
             
-            // Dibujar barra horizontal
-            canvas.DrawRect(chartArea.Left, y, barWidth, barHeight - 20, barPaint);
+            using var sectionPaint = new SKPaint
+            {
+                Color = colors[i % colors.Length],
+                IsAntialias = true
+            };
             
-            // Dibujar nombre del cirujano
-            var name = surgeon.SurgeonName.Length > 15 ? surgeon.SurgeonName.Substring(0, 15) + "..." : surgeon.SurgeonName;
-            canvas.DrawText(name, 10, y + (barHeight - 20) / 2 + 5, textPaint);
+            // Dibujar sección de la torta
+            var rect = new SKRect(centerX - radius, centerY - radius, centerX + radius, centerY + radius);
+            canvas.DrawArc(rect, currentAngle, sweepAngle, true, sectionPaint);
             
-            // Dibujar valor al final de la barra
-            canvas.DrawText(surgeon.TotalSurgeries.ToString(), chartArea.Left + barWidth + 5, y + (barHeight - 20) / 2 + 5, textPaint);
+            // Dibujar leyenda
+            var legendY = 50 + i * 22;
+            var legendRect = new SKRect(centerX + radius + 20, legendY - 6, centerX + radius + 32, legendY + 6);
+            canvas.DrawRect(legendRect, sectionPaint);
+            
+            var surgeonName = surgeon.SurgeonName.Length > 12 ? surgeon.SurgeonName.Substring(0, 12) + "..." : surgeon.SurgeonName;
+            var legendText = $"{surgeonName}: {surgeon.TotalSurgeries} ({percentage:F1}%)";
+            canvas.DrawText(legendText, centerX + radius + 40, legendY + 3, textPaint);
+            
+            currentAngle += sweepAngle;
         }
         
         using var image = surface.Snapshot();
@@ -143,7 +184,7 @@ public class ChartGeneratorService
         return data.ToArray();
     }
     
-    public byte[] GenerateTimelineChart(Dictionary<DateTime, int> timelineData, int width = 500, int height = 250)
+    public byte[] GenerateTimelineChart(Dictionary<DateTime, int> timelineData, int width = 700, int height = 300)
     {
         var info = new SKImageInfo(width, height);
         using var surface = SKSurface.Create(info);
@@ -154,11 +195,11 @@ public class ChartGeneratorService
         if (!timelineData.Any()) return GenerateNoDataChart(width, height);
         
         var sortedData = timelineData.OrderBy(x => x.Key).ToList();
-        var maxValue = sortedData.Max(x => x.Value);
+        var maxValue = Math.Max(1, sortedData.Max(x => x.Value)); // Evitar división por 0
         
-        // Configuración del gráfico
-        var chartArea = new SKRect(60, 40, width - 40, height - 60);
-        var pointWidth = (chartArea.Width - 20) / Math.Max(1, sortedData.Count - 1);
+        // Configuración del gráfico más amplio
+        var chartArea = new SKRect(60, 50, width - 40, height - 80);
+        var pointWidth = sortedData.Count > 1 ? (chartArea.Width - 40) / (sortedData.Count - 1) : chartArea.Width / 2;
         
         // Dibujar título
         using var titlePaint = new SKPaint
@@ -170,28 +211,59 @@ public class ChartGeneratorService
         };
         
         var titleBounds = new SKRect();
-        titlePaint.MeasureText("Tendencia Temporal", ref titleBounds);
-        canvas.DrawText("Tendencia Temporal", (width - titleBounds.Width) / 2, 25, titlePaint);
+        titlePaint.MeasureText("Tendencia Temporal - Cirugías por Día", ref titleBounds);
+        canvas.DrawText("Tendencia Temporal - Cirugías por Día", (width - titleBounds.Width) / 2, 30, titlePaint);
+        
+        // Dibujar grilla de fondo
+        using var gridPaint = new SKPaint
+        {
+            Color = SKColors.LightGray,
+            StrokeWidth = 1,
+            IsAntialias = true,
+            Style = SKPaintStyle.Stroke
+        };
+        
+        // Líneas horizontales de la grilla
+        for (int i = 0; i <= 5; i++)
+        {
+            var y = chartArea.Bottom - (i / 5f) * (chartArea.Height - 20);
+            canvas.DrawLine(chartArea.Left, y, chartArea.Right, y, gridPaint);
+        }
         
         // Dibujar línea y puntos
         using var linePaint = new SKPaint
         {
-            Color = SKColor.Parse("#FF6B6B"),
-            StrokeWidth = 2,
+            Color = SKColor.Parse("#2196F3"),
+            StrokeWidth = 3,
             IsAntialias = true,
             Style = SKPaintStyle.Stroke
         };
         
         using var pointPaint = new SKPaint
         {
-            Color = SKColor.Parse("#FF6B6B"),
+            Color = SKColors.White,
             IsAntialias = true
+        };
+        
+        using var pointBorderPaint = new SKPaint
+        {
+            Color = SKColor.Parse("#2196F3"),
+            StrokeWidth = 2,
+            IsAntialias = true,
+            Style = SKPaintStyle.Stroke
         };
         
         using var textPaint = new SKPaint
         {
             Color = SKColors.Black,
-            TextSize = 8,
+            TextSize = 10,
+            IsAntialias = true
+        };
+        
+        using var datePaint = new SKPaint
+        {
+            Color = SKColors.DarkGray,
+            TextSize = 9,
             IsAntialias = true
         };
         
@@ -201,8 +273,8 @@ public class ChartGeneratorService
         for (int i = 0; i < sortedData.Count; i++)
         {
             var point = sortedData[i];
-            var x = chartArea.Left + i * pointWidth;
-            var y = chartArea.Bottom - (point.Value / (float)maxValue) * (chartArea.Height - 20);
+            var x = chartArea.Left + 20 + i * pointWidth;
+            var y = chartArea.Bottom - 10 - (point.Value / (float)maxValue) * (chartArea.Height - 30);
             
             if (first)
             {
@@ -214,21 +286,45 @@ public class ChartGeneratorService
                 path.LineTo(x, y);
             }
             
-            // Dibujar punto
-            canvas.DrawCircle(x, y, 3, pointPaint);
+            // Dibujar punto con borde
+            canvas.DrawCircle(x, y, 5, pointPaint);
+            canvas.DrawCircle(x, y, 5, pointBorderPaint);
             
-            // Dibujar valor
-            canvas.DrawText(point.Value.ToString(), x - 5, y - 8, textPaint);
-            
-            // Dibujar fecha (solo cada 2-3 puntos para evitar solapamiento)
-            if (i % Math.Max(1, sortedData.Count / 6) == 0)
+            // Dibujar valor encima del punto
+            if (point.Value > 0)
             {
-                canvas.DrawText(point.Key.ToString("dd/MM"), x - 10, chartArea.Bottom + 15, textPaint);
+                canvas.DrawText(point.Value.ToString(), x - 5, y - 12, textPaint);
+            }
+            
+            // Dibujar fecha debajo - mostrar más fechas para reportes mensuales
+            var showEvery = Math.Max(1, sortedData.Count / 15); // Mostrar hasta 15 fechas
+            if (i % showEvery == 0 || i == sortedData.Count - 1) // Siempre mostrar primera y última
+            {
+                canvas.Save();
+                canvas.Translate(x, chartArea.Bottom + 15);
+                canvas.RotateDegrees(-45); // Rotar texto para mejor legibilidad
+                canvas.DrawText(point.Key.ToString("dd/MM"), 0, 0, datePaint);
+                canvas.Restore();
             }
         }
         
         canvas.DrawPath(path, linePaint);
         path.Dispose();
+        
+        // Dibujar etiquetas del eje Y
+        using var yAxisPaint = new SKPaint
+        {
+            Color = SKColors.Gray,
+            TextSize = 9,
+            IsAntialias = true
+        };
+        
+        for (int i = 0; i <= 5; i++)
+        {
+            var value = (maxValue / 5f) * i;
+            var y = chartArea.Bottom - (i / 5f) * (chartArea.Height - 20);
+            canvas.DrawText(((int)value).ToString(), 10, y + 3, yAxisPaint);
+        }
         
         using var image = surface.Snapshot();
         using var data = image.Encode(SKEncodedImageFormat.Png, 100);

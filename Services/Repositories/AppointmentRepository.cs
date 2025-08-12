@@ -209,6 +209,8 @@ public class AppointmentRepository : IAppointmentRepository
 
     public async Task<List<Appointment>> GetAppointmentsByDateRangeAsync(string googleEmail, DateTime startDate, DateTime endDate, CancellationToken ct)
     {
+        Console.WriteLine($"[APPOINTMENT-REPO] Querying appointments for email: '{googleEmail}', from {startDate:yyyy-MM-dd} to {endDate:yyyy-MM-dd}");
+        
         const string sql = @"
             SELECT id AS Id,
                    chat_id AS ChatId,
@@ -231,6 +233,8 @@ public class AppointmentRepository : IAppointmentRepository
         await using var conn = await OpenAsync(ct);
         var appointments = await conn.QueryAsync<Appointment>(
             new CommandDefinition(sql, new { googleEmail, startDate, endDate }, cancellationToken: ct));
+            
+        Console.WriteLine($"[APPOINTMENT-REPO] Found {appointments.Count()} appointments for email '{googleEmail}' in date range");
         
         return appointments.ToList();
     }
@@ -267,7 +271,7 @@ CREATE TABLE IF NOT EXISTS appointments (
     cirujano TEXT NOT NULL,
     cirugia TEXT NOT NULL,
     cantidad INTEGER NOT NULL,
-    anestesiologo TEXT NOT NULL,
+    anestesiologo TEXT NULL,
     calendar_event_id TEXT NULL,
     calendar_synced_at TIMESTAMP NULL,
     reminder_sent_at TIMESTAMP NULL,

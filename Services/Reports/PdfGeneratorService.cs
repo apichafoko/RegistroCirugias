@@ -178,54 +178,49 @@ public class PdfGeneratorService
             column.Item().Text("📈 ANÁLISIS VISUAL")
                 .FontSize(16).Bold().FontColor(Colors.Blue.Darken1);
 
-            column.Item().PaddingTop(10).Row(row =>
+            // Gráfico de cirugías por tipo (ancho completo)
+            if (reportData.SurgeriesByType.Any())
             {
-                // Gráfico de tipos de cirugía
-                if (reportData.SurgeriesByType.Any())
+                column.Item().PaddingTop(15).Element(container =>
                 {
-                    row.RelativeItem().Element(container =>
+                    container.Border(1).BorderColor(Colors.Grey.Lighten2).Padding(15).Column(col =>
                     {
-                        container.Border(1).BorderColor(Colors.Grey.Lighten2).Padding(10).Column(col =>
+                        col.Item().Text("Cirugías por Tipo").FontSize(14).SemiBold().AlignCenter();
+                        
+                        try
                         {
-                            col.Item().Text("Cirugías por Tipo").FontSize(12).SemiBold().AlignCenter();
-                            
-                            try
-                            {
-                                var chartBytes = _chartGenerator.GenerateSurgeryTypeChart(reportData.SurgeriesByType, 200, 150);
-                                col.Item().Height(150).Image(chartBytes);
-                            }
-                            catch
-                            {
-                                col.Item().Height(150).AlignCenter().Text("Gráfico no disponible").FontColor(Colors.Grey.Medium);
-                            }
-                        });
+                            var chartBytes = _chartGenerator.GenerateSurgeryTypeChart(reportData.SurgeriesByType, 500, 250);
+                            col.Item().MaxHeight(250).AlignCenter().Image(chartBytes).FitArea();
+                        }
+                        catch
+                        {
+                            col.Item().Height(200).AlignCenter().Text("Gráfico de cirugías por tipo no disponible").FontColor(Colors.Grey.Medium);
+                        }
                     });
-                }
-
-                row.ConstantItem(10); // Espaciado
-
-                // Gráfico de volumen por cirujano
-                if (reportData.SurgeonStats.Any())
+                });
+            }
+            
+            // Gráfico de top cirujanos (ancho completo)
+            if (reportData.SurgeonStats.Any())
+            {
+                column.Item().PaddingTop(15).Element(container =>
                 {
-                    row.RelativeItem().Element(container =>
+                    container.Border(1).BorderColor(Colors.Grey.Lighten2).Padding(15).Column(col =>
                     {
-                        container.Border(1).BorderColor(Colors.Grey.Lighten2).Padding(10).Column(col =>
+                        col.Item().Text("Top Cirujanos").FontSize(14).SemiBold().AlignCenter();
+                        
+                        try
                         {
-                            col.Item().Text("Top Cirujanos").FontSize(12).SemiBold().AlignCenter();
-                            
-                            try
-                            {
-                                var chartBytes = _chartGenerator.GenerateSurgeonVolumeChart(reportData.SurgeonStats, 200, 150);
-                                col.Item().Height(150).Image(chartBytes);
-                            }
-                            catch
-                            {
-                                col.Item().Height(150).AlignCenter().Text("Gráfico no disponible").FontColor(Colors.Grey.Medium);
-                            }
-                        });
+                            var chartBytes = _chartGenerator.GenerateSurgeonVolumeChart(reportData.SurgeonStats, 500, 250);
+                            col.Item().MaxHeight(250).AlignCenter().Image(chartBytes).FitArea();
+                        }
+                        catch
+                        {
+                            col.Item().Height(200).AlignCenter().Text("Gráfico de cirujanos no disponible").FontColor(Colors.Grey.Medium);
+                        }
                     });
-                }
-            });
+                });
+            }
 
             // Gráfico de tendencia temporal (si hay datos temporales)
             if (reportData.DailySurgeriesTimeline.Any())
@@ -234,12 +229,12 @@ public class PdfGeneratorService
                 {
                     container.Border(1).BorderColor(Colors.Grey.Lighten2).Padding(15).Column(col =>
                     {
-                        col.Item().Text("Tendencia Temporal").FontSize(12).SemiBold().AlignCenter();
+                        col.Item().Text("Tendencia Temporal").FontSize(14).SemiBold().AlignCenter();
                         
                         try
                         {
-                            var chartBytes = _chartGenerator.GenerateTimelineChart(reportData.DailySurgeriesTimeline, 450, 200);
-                            col.Item().Height(200).AlignCenter().Image(chartBytes);
+                            var chartBytes = _chartGenerator.GenerateTimelineChart(reportData.DailySurgeriesTimeline, 700, 300);
+                            col.Item().MaxHeight(300).AlignCenter().Image(chartBytes).FitArea();
                         }
                         catch
                         {

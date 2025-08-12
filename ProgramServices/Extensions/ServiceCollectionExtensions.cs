@@ -81,6 +81,12 @@ public static class ServiceCollectionExtensions
             return new AnesthesiologistRepository(dbOptions.Value.ConnectionString);
         });
         
+        services.AddScoped<IUsuarioTelegramRepository>(provider =>
+        {
+            var dbOptions = provider.GetRequiredService<Microsoft.Extensions.Options.IOptions<DatabaseOptions>>();
+            return new UsuarioTelegramRepository(dbOptions.Value.ConnectionString);
+        });
+        
         services.AddScoped<RegistroCx.Helpers._0Auth.IGoogleOAuthService>(provider =>
         {
             var googleOptions = provider.GetRequiredService<Microsoft.Extensions.Options.IOptions<GoogleOAuthOptions>>().Value;
@@ -100,8 +106,15 @@ public static class ServiceCollectionExtensions
             return new RegistroCx.Services.Extraction.LLMOpenAIAssistant(openAiOptions.ApiKey);
         });
         
-        // Diccionario compartido para mantener estado entre requests
+        services.AddScoped<IAnesthesiologistSearchService>(provider =>
+        {
+            var openAiOptions = provider.GetRequiredService<Microsoft.Extensions.Options.IOptions<OpenAIOptions>>().Value;
+            return new AnesthesiologistSearchService(openAiOptions.ApiKey);
+        });
+        
+        // Diccionarios compartidos para mantener estado entre requests
         services.AddSingleton<Dictionary<long, RegistroCx.Models.Appointment>>();
+        services.AddSingleton<Dictionary<long, RegistroCx.Services.Reports.ReportService.ReportCommandState>>();
         services.AddScoped<CalendarSyncService>();
         services.AddScoped<CirugiaFlowService>(provider =>
         {
@@ -114,7 +127,8 @@ public static class ServiceCollectionExtensions
             var appointmentRepo = provider.GetRequiredService<IAppointmentRepository>();
             var multiSurgeryParser = provider.GetRequiredService<MultiSurgeryParser>();
             var reportService = provider.GetRequiredService<IReportService>();
-            return new CirugiaFlowService(llm, pending, confirmationService, oauthService, userRepo, calendarSync, appointmentRepo, multiSurgeryParser, reportService);
+            var anesthesiologistSearchService = provider.GetRequiredService<IAnesthesiologistSearchService>();
+            return new CirugiaFlowService(llm, pending, confirmationService, oauthService, userRepo, calendarSync, appointmentRepo, multiSurgeryParser, reportService, anesthesiologistSearchService);
         });
         services.AddScoped<AppointmentConfirmationService>();
         services.AddScoped<AudioTranscriptionService>(provider =>
@@ -146,7 +160,13 @@ public static class ServiceCollectionExtensions
         });
         services.AddScoped<ChartGeneratorService>();
         services.AddScoped<PdfGeneratorService>();
-        services.AddScoped<IReportService, ReportService>();
+        services.AddScoped<IReportService>(provider =>
+        {
+            var dataService = provider.GetRequiredService<ReportDataService>();
+            var pdfGenerator = provider.GetRequiredService<PdfGeneratorService>();
+            var commandStates = provider.GetRequiredService<Dictionary<long, RegistroCx.Services.Reports.ReportService.ReportCommandState>>();
+            return new ReportService(dataService, pdfGenerator, commandStates);
+        });
 
         // Background services
         services.AddHostedService<TelegramBotService>();

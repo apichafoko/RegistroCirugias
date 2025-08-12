@@ -57,8 +57,15 @@ public class AppointmentConfirmationService
 
             Console.WriteLine($"[CONFIRMATION] ✅ Atomic transaction successful - DB ID: {appointmentId}, Calendar ID: {eventId}");
 
-            // 3. Manejar invitación del anestesiólogo (no crítico, puede fallar)
-            await HandleAnesthesiologistInvitation(bot, appt, chatId, eventId, ct, silent);
+            // 3. Manejar invitación del anestesiólogo (solo si hay anestesiólogo asignado)
+            if (!string.IsNullOrEmpty(appt.Anestesiologo))
+            {
+                await HandleAnesthesiologistInvitation(bot, appt, chatId, eventId, ct, silent);
+            }
+            else if (!silent)
+            {
+                Console.WriteLine("[CONFIRMATION] No anesthesiologist assigned, skipping invitation");
+            }
 
             // Solo enviar mensaje de confirmación individual si no está en modo silencioso
             if (!silent)

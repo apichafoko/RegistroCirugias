@@ -22,29 +22,10 @@ public class UserProfile
     public DateTime? GoogleTokenExpiry { get; set; }
     public string? OAuthNonce { get; set; }
 
-    // Campos específicos de Telegram (únicos por usuario de Telegram)
-    public long? TelegramUserId { get; set; }
-    public string? TelegramFirstName { get; set; }
-    public string? TelegramLastName { get; set; }
-    public string? TelegramUsername { get; set; }
-    public string? TelegramLanguageCode { get; set; }
+    // Nota: Los datos específicos de Telegram se almacenan en la tabla usuarios_telegram
 
     // Auditoría opcional
     public DateTime CreatedAt { get; set; }
     public DateTime UpdatedAt { get; set; }
 
-    // Helper para obtener nombre completo de Telegram
-    public string GetTelegramDisplayName()
-    {
-        if (!string.IsNullOrWhiteSpace(TelegramFirstName) && !string.IsNullOrWhiteSpace(TelegramLastName))
-            return $"{TelegramFirstName} {TelegramLastName}";
-        
-        if (!string.IsNullOrWhiteSpace(TelegramFirstName))
-            return TelegramFirstName;
-            
-        if (!string.IsNullOrWhiteSpace(TelegramUsername))
-            return $"@{TelegramUsername}";
-            
-        return "Usuario";
-    }
 }

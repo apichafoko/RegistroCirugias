@@ -118,6 +118,41 @@ public static class CamposExistentes
                 appt.Cirujano = Capitalizador.CapitalizarSimple(valor);
                 return true;
 
+            case Appointment.CampoPendiente.PreguntandoSiAsignarAnestesiologo:
+                var respuesta = valor.ToLowerInvariant().Trim();
+                if (respuesta.Contains("sí") || respuesta.Contains("si") || respuesta.Contains("yes") || respuesta.Contains("y"))
+                {
+                    // El usuario quiere asignar anestesiólogo, cambiar al estado de búsqueda
+                    appt.CampoQueFalta = Appointment.CampoPendiente.Anestesiologo;
+                    return false; // No completamos este campo, sino que transicionamos al siguiente
+                }
+                else if (respuesta.Contains("no") || respuesta.Contains("n"))
+                {
+                    // El usuario no quiere anestesiólogo, marcar como completado sin asignar
+                    appt.Anestesiologo = null;
+                    return true;
+                }
+                else
+                {
+                    error = "Por favor responde 'sí' o 'no'.";
+                    return false;
+                }
+
+            case Appointment.CampoPendiente.SeleccionandoAnestesiologoCandidato:
+                // El usuario debe seleccionar un número de la lista de candidatos
+                if (int.TryParse(valor.Trim(), out var selection) && 
+                    selection > 0 && selection <= appt.AnesthesiologistCandidates.Count)
+                {
+                    appt.Anestesiologo = appt.AnesthesiologistCandidates[selection - 1];
+                    appt.AnesthesiologistCandidates.Clear(); // Limpiar candidatos
+                    return true;
+                }
+                else
+                {
+                    error = $"Por favor selecciona un número del 1 al {appt.AnesthesiologistCandidates.Count}.";
+                    return false;
+                }
+
             case Appointment.CampoPendiente.Anestesiologo:
                 if (valor.Length < 2) { error = "Nombre muy corto."; return false; }
                 appt.Anestesiologo = Capitalizador.CapitalizarSimple(valor);
@@ -397,6 +432,8 @@ public static class CamposExistentes
         Appointment.CampoPendiente.Cirujano => "cirujano",
         Appointment.CampoPendiente.Cirugia => "cirugía",
         Appointment.CampoPendiente.Cantidad => "cantidad",
+        Appointment.CampoPendiente.PreguntandoSiAsignarAnestesiologo => "asignación de anestesiólogo",
+        Appointment.CampoPendiente.SeleccionandoAnestesiologoCandidato => "selección de anestesiólogo",
         Appointment.CampoPendiente.Anestesiologo => "anestesiólogo",
         _ => "campo"
     };

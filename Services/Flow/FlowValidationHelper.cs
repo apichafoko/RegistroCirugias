@@ -9,8 +9,9 @@ public static class FlowValidationHelper
 {
     public static async Task<bool> TryConfirmation(ITelegramBotClient bot, Appointment appt, long chatId, CancellationToken ct)
     {
+        // El anestesiólogo ahora es opcional
         if (appt.FechaHora == null || appt.Lugar == null || appt.Cirujano == null ||
-            appt.Cirugia == null || appt.Cantidad == null || appt.Anestesiologo == null)
+            appt.Cirugia == null || appt.Cantidad == null)
             return false;
 
         var (okFecha, err) = FechasHelper.ValidarFechaCirugia(appt.FechaHora, DateTime.Now);
@@ -50,13 +51,17 @@ public static class FlowValidationHelper
 
     private static string BuildConfirmationSummary(Appointment appt)
     {
+        var anesthesiologistLine = string.IsNullOrEmpty(appt.Anestesiologo) ? 
+               "• Anestesiólogo: (Sin asignar)\n" :
+               $"• Anestesiólogo: {appt.Anestesiologo}\n";
+               
         return "¿Confirmás estos datos?\n" +
                $"• Fecha y hora: {appt.FechaHora:dd/MM/yyyy HH:mm}\n" +
                $"• Lugar: {appt.Lugar}\n" +
                $"• Cirujano: {appt.Cirujano}\n" +
                $"• Cirugía: {appt.Cirugia}\n" +
                $"• Cantidad: {appt.Cantidad}\n" +
-               $"• Anestesiólogo: {appt.Anestesiologo}\n" +
+               anesthesiologistLine +
                "Respondé 'sí' / 'ok' para confirmar, o 'no' para corregir.";
     }
 
@@ -72,7 +77,7 @@ public static class FlowValidationHelper
         if (appt.Cirujano == null) faltantes.Add(Appointment.CampoPendiente.Cirujano);
         if (appt.Cirugia == null) faltantes.Add(Appointment.CampoPendiente.Cirugia);
         if (appt.Cantidad == null) faltantes.Add(Appointment.CampoPendiente.Cantidad);
-        if (appt.Anestesiologo == null) faltantes.Add(Appointment.CampoPendiente.Anestesiologo);
+        if (appt.Anestesiologo == null) faltantes.Add(Appointment.CampoPendiente.PreguntandoSiAsignarAnestesiologo);
 
         return faltantes;
     }
@@ -90,6 +95,16 @@ public static class FlowValidationHelper
             {
                 return "Me falta la fecha y hora. Indicá el valor (ej: 08/08 14hs, mañana 16:00).";
             }
+        }
+
+        if (campo == Appointment.CampoPendiente.PreguntandoSiAsignarAnestesiologo)
+        {
+            return "¿Querés asignar un anestesiólogo a esta cirugía? Respondé 'sí' o 'no'.";
+        }
+        
+        if (campo == Appointment.CampoPendiente.SeleccionandoAnestesiologoCandidato)
+        {
+            return "Seleccioná el número del anestesiólogo que correspondá.";
         }
 
         return $"Me falta {CamposExistentes.NombreHumanoCampo(campo)}. Indicá el valor.";

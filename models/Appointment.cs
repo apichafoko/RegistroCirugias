@@ -27,6 +27,8 @@ public class Appointment
         Lugar,
         Cirujano,
         Cantidad,
+        PreguntandoSiAsignarAnestesiologo,
+        SeleccionandoAnestesiologoCandidato,
         Anestesiologo,
         Cirugia,
         EsperandoNombreCampo,
@@ -43,6 +45,9 @@ public class Appointment
     public string? PendingEventId { get; set; }
     public string? PendingAnesthesiologistName { get; set; }
     public bool ReadyForCleanup { get; set; } = false;
+
+    // Campo para almacenar candidatos de anestesiólogo durante búsqueda
+    public List<string> AnesthesiologistCandidates { get; set; } = new();
 
     // Propiedad para compatibilidad
     public DateTime? FechaHora 

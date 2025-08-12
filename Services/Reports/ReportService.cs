@@ -16,18 +16,21 @@ public class ReportService : IReportService
     private readonly ReportDataService _dataService;
     private readonly PdfGeneratorService _pdfGenerator;
     
-    // Estados para manejo de comandos con parámetros
-    private readonly Dictionary<long, ReportCommandState> _commandStates = new();
+    // Estados para manejo de comandos con parámetros (compartido entre requests)
+    private readonly Dictionary<long, ReportCommandState> _commandStates;
 
-    public ReportService(ReportDataService dataService, PdfGeneratorService pdfGenerator)
+    public ReportService(ReportDataService dataService, PdfGeneratorService pdfGenerator, Dictionary<long, ReportCommandState> commandStates)
     {
         _dataService = dataService;
         _pdfGenerator = pdfGenerator;
+        _commandStates = commandStates;
     }
 
     public async Task<bool> HandleReportCommandAsync(ITelegramBotClient bot, long chatId, string command, CancellationToken ct)
     {
+        Console.WriteLine($"[REPORT] HandleReportCommandAsync called with: '{command}' for chat {chatId}");
         var commandLower = command.Trim().ToLowerInvariant();
+        Console.WriteLine($"[REPORT] Command lowercased: '{commandLower}'.");
         
         switch (commandLower)
         {
@@ -36,8 +39,19 @@ public class ReportService : IReportService
                 return true;
                 
             case "/mensual":
-                await HandleMonthlyReportCommand(bot, chatId, ct);
-                return true;
+                Console.WriteLine($"[REPORT] Calling HandleMonthlyReportCommand for chat {chatId}");
+                try
+                {
+                    await HandleMonthlyReportCommand(bot, chatId, ct);
+                    Console.WriteLine($"[REPORT] HandleMonthlyReportCommand completed successfully for chat {chatId}");
+                    return true;
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"[REPORT] Error in HandleMonthlyReportCommand: {ex.Message}");
+                    Console.WriteLine($"[REPORT] StackTrace: {ex.StackTrace}");
+                    throw;
+                }
                 
             case "/anual":
                 await HandleAnnualReportCommand(bot, chatId, ct);
@@ -78,16 +92,34 @@ public class ReportService : IReportService
 
     private async Task HandleMonthlyReportCommand(ITelegramBotClient bot, long chatId, CancellationToken ct)
     {
-        _commandStates[chatId] = new ReportCommandState
+        Console.WriteLine($"[REPORT] HandleMonthlyReportCommand started for chat {chatId}");
+        
+        try
         {
-            Type = ReportType.Monthly,
-            WaitingFor = "month_year"
-        };
+            var state = new ReportCommandState
+            {
+                Type = ReportType.Monthly,
+                WaitingFor = "month_year"
+            };
+            
+            Console.WriteLine($"[REPORT] Created state: Type={state.Type}, WaitingFor={state.WaitingFor}");
+            
+            _commandStates[chatId] = state;
+            Console.WriteLine($"[REPORT] Set state for chat {chatId}: Type={state.Type}, WaitingFor={state.WaitingFor}, Total states: {_commandStates.Count}");
 
-        await MessageSender.SendWithRetry(chatId,
-            "📅 ¿De qué mes querés el reporte?\n\n" +
-            "Enviame en formato **MM/YYYY** (ej: 03/2024, 12/2023)",
-            cancellationToken: ct);
+            await MessageSender.SendWithRetry(chatId,
+                "📅 ¿De qué mes querés el reporte?\n\n" +
+                "Enviame en formato **MM/YYYY** (ej: 03/2024, 12/2023)",
+                cancellationToken: ct);
+                
+            Console.WriteLine($"[REPORT] Message sent successfully to chat {chatId}");
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[REPORT] Exception in HandleMonthlyReportCommand: {ex.Message}");
+            Console.WriteLine($"[REPORT] StackTrace: {ex.StackTrace}");
+            throw;
+        }
     }
 
     private async Task HandleAnnualReportCommand(ITelegramBotClient bot, long chatId, CancellationToken ct)
@@ -106,28 +138,25 @@ public class ReportService : IReportService
 
     private async Task<bool> HandlePendingReportCommand(ITelegramBotClient bot, long chatId, string input, CancellationToken ct)
     {
+        Console.WriteLine($"[REPORT] HandlePendingReportCommand called with: '{input}' for chat {chatId}");
         if (!_commandStates.TryGetValue(chatId, out var state))
+        {
+            Console.WriteLine($"[REPORT] No pending state found for chat {chatId}");
             return false;
-
-        try
-        {
-            switch (state.WaitingFor)
-            {
-                case "month_year":
-                    return await HandleMonthYearInput(bot, chatId, input, ct);
-                    
-                case "year":
-                    return await HandleYearInput(bot, chatId, input, ct);
-                    
-                default:
-                    _commandStates.Remove(chatId);
-                    return false;
-            }
         }
-        finally
+        Console.WriteLine($"[REPORT] Found pending state - Type: {state.Type}, WaitingFor: {state.WaitingFor}");
+
+        switch (state.WaitingFor)
         {
-            // Limpiar estado al final
-            _commandStates.Remove(chatId);
+            case "month_year":
+                return await HandleMonthYearInput(bot, chatId, input, ct);
+                
+            case "year":
+                return await HandleYearInput(bot, chatId, input, ct);
+                
+            default:
+                _commandStates.Remove(chatId);
+                return false;
         }
     }
 
@@ -178,6 +207,9 @@ public class ReportService : IReportService
             // Limpiar archivo temporal
             if (System.IO.File.Exists(pdfPath))
                 System.IO.File.Delete(pdfPath);
+                
+            // Reporte exitoso - limpiar estado
+            _commandStates.Remove(chatId);
         }
         catch (Exception ex)
         {
@@ -185,6 +217,7 @@ public class ReportService : IReportService
             await MessageSender.SendWithRetry(chatId,
                 "❌ Error generando el reporte mensual. Intenta nuevamente.",
                 cancellationToken: ct);
+            // NO remover estado en caso de error para permitir reintento
         }
 
         return true;
@@ -223,6 +256,9 @@ public class ReportService : IReportService
             // Limpiar archivo temporal
             if (System.IO.File.Exists(pdfPath))
                 System.IO.File.Delete(pdfPath);
+                
+            // Reporte exitoso - limpiar estado
+            _commandStates.Remove(chatId);
         }
         catch (Exception ex)
         {
@@ -230,6 +266,7 @@ public class ReportService : IReportService
             await MessageSender.SendWithRetry(chatId,
                 "❌ Error generando el reporte anual. Intenta nuevamente.",
                 cancellationToken: ct);
+            // NO remover estado en caso de error para permitir reintento
         }
 
         return true;
@@ -278,7 +315,7 @@ public class ReportService : IReportService
         return await _pdfGenerator.CreateAnnualReportPdfAsync(reportData, ct);
     }
 
-    private class ReportCommandState
+    public class ReportCommandState
     {
         public ReportType Type { get; set; }
         public string WaitingFor { get; set; } = string.Empty;
