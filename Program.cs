@@ -15,7 +15,7 @@ builder.Services.ConfigureApplicationServices(builder.Configuration);
 
 // Configurar URLs - Railway usa PORT environment variable
 var port = Environment.GetEnvironmentVariable("PORT") ?? "8080";
-builder.WebHost.UseUrls($"http://0.0.0.0:{port}");
+builder.WebHost.UseUrls($"http://*:{port}");
 
 var app = builder.Build();
 
