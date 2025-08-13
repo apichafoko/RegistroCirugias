@@ -13,8 +13,9 @@ builder.LoadEnvironmentVariables();
 // Configurar servicios
 builder.Services.ConfigureApplicationServices(builder.Configuration);
 
-// Configurar URLs
-builder.WebHost.UseUrls("http://0.0.0.0:5002", "https://0.0.0.0:5003");
+// Configurar URLs - Railway usa PORT environment variable
+var port = Environment.GetEnvironmentVariable("PORT") ?? "8080";
+builder.WebHost.UseUrls($"http://0.0.0.0:{port}");
 
 var app = builder.Build();
 

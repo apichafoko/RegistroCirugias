@@ -1,0 +1,25 @@
+# Ignorar archivos innecesarios para Docker
+bin/
+obj/
+.vs/
+.vscode/
+*.user
+*.suo
+.git/
+.gitignore
+README.md
+Dockerfile
+.dockerignore
+node_modules/
+npm-debug.log
+.nyc_output/
+coverage/
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+logs/
+*.log
+.DS_Store
+Thumbs.db

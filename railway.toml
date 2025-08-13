@@ -1,0 +1,8 @@
+[build]
+builder = "dockerfile"
+
+[deploy]
+startCommand = "dotnet RegistroCx.dll"
+healthcheckPath = "/health"
+healthcheckTimeout = 300
+restartPolicyType = "always"
