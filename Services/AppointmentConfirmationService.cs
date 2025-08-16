@@ -17,19 +17,22 @@ public class AppointmentConfirmationService
     private readonly IAnesthesiologistRepository _anesthesiologistRepo;
     private readonly IGoogleOAuthService _googleOAuth;
     private readonly IGoogleCalendarService _calendarService;
+    private readonly UserLearningService? _learningService;
 
     public AppointmentConfirmationService(
         IUserProfileRepository userRepo,
         IAppointmentRepository appointmentRepo,
         IAnesthesiologistRepository anesthesiologistRepo,
         IGoogleOAuthService googleOAuth,
-        IGoogleCalendarService calendarService)
+        IGoogleCalendarService calendarService,
+        UserLearningService? learningService = null)
     {
         _userRepo = userRepo;
         _appointmentRepo = appointmentRepo;
         _anesthesiologistRepo = anesthesiologistRepo;
         _googleOAuth = googleOAuth;
         _calendarService = calendarService;
+        _learningService = learningService;
     }
 
     public async Task<bool> ProcessConfirmationAsync(
@@ -56,6 +59,9 @@ public class AppointmentConfirmationService
             await _appointmentRepo.UpdateCalendarEventAsync(appointmentId, eventId, ct);
 
             Console.WriteLine($"[CONFIRMATION] ✅ Atomic transaction successful - DB ID: {appointmentId}, Calendar ID: {eventId}");
+
+            // APRENDER después de confirmación exitosa
+            await LearnFromConfirmedAppointment(appt, chatId, ct);
 
             // 3. Manejar invitación del anestesiólogo (solo si hay anestesiólogo asignado)
             if (!string.IsNullOrEmpty(appt.Anestesiologo))
@@ -432,6 +438,63 @@ public class AppointmentConfirmationService
             {
                 Console.WriteLine($"[ROLLBACK] ⚠️ Some rollback operations failed: {ex.Message}");
             }
+        }
+    }
+
+    /// <summary>
+    /// Aprende de un appointment confirmado exitosamente por el usuario
+    /// </summary>
+    private async Task LearnFromConfirmedAppointment(Appointment appt, long chatId, CancellationToken ct)
+    {
+        if (_learningService == null)
+        {
+            Console.WriteLine("[LEARNING] Learning service not available, skipping learning from confirmed appointment");
+            return;
+        }
+
+        try
+        {
+            // Construir diccionario con los datos confirmados del appointment
+            var confirmedData = new Dictionary<string, string>();
+
+            // Agregar datos solo si están presentes y no son valores por defecto
+            if (!string.IsNullOrWhiteSpace(appt.Lugar))
+                confirmedData["lugar"] = appt.Lugar;
+            
+            if (!string.IsNullOrWhiteSpace(appt.Cirujano))
+                confirmedData["cirujano"] = appt.Cirujano;
+            
+            if (!string.IsNullOrWhiteSpace(appt.Cirugia))
+                confirmedData["cirugia"] = appt.Cirugia;
+            
+            if (!string.IsNullOrWhiteSpace(appt.Anestesiologo))
+                confirmedData["anestesiologo"] = appt.Anestesiologo;
+
+            if (appt.Cantidad.HasValue && appt.Cantidad > 0)
+                confirmedData["cantidad"] = appt.Cantidad.Value.ToString();
+
+            // Solo aprender si hay datos útiles y hay inputs históricos
+            if (confirmedData.Any() && appt.HistoricoInputs.Any())
+            {
+                // Usar el input original (primer mensaje del usuario)
+                var originalInput = appt.HistoricoInputs.First();
+                
+                Console.WriteLine($"[LEARNING] Learning from confirmed appointment for user {chatId}: {originalInput}");
+                Console.WriteLine($"[LEARNING] Confirmed data: {string.Join(", ", confirmedData.Select(kv => $"{kv.Key}={kv.Value}"))}");
+                
+                await _learningService.LearnFromInteraction(chatId, originalInput, confirmedData, ct);
+                
+                Console.WriteLine("[LEARNING] ✅ Successfully learned from confirmed appointment");
+            }
+            else
+            {
+                Console.WriteLine("[LEARNING] No useful data or input history to learn from");
+            }
+        }
+        catch (Exception ex)
+        {
+            // No fallar la confirmación por errores de aprendizaje
+            Console.WriteLine($"[LEARNING] ⚠️ Error learning from confirmed appointment: {ex.Message}");
         }
     }
 }

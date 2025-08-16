@@ -3,16 +3,45 @@ using RegistroCx.Models;
 using RegistroCx.Helpers;
 using RegistroCx.Services.Extraction;
 using RegistroCx.ProgramServices.Services.Telegram;
+using RegistroCx.Services.UI;
+using RegistroCx.models;
 
 namespace RegistroCx.Services.Flow;
 
 public class FlowLLMProcessor
 {
     private readonly LLMOpenAIAssistant _llm;
+    private readonly IQuickEditService? _quickEditService;
 
-    public FlowLLMProcessor(LLMOpenAIAssistant llm)
+    public FlowLLMProcessor(LLMOpenAIAssistant llm, IQuickEditService? quickEditService = null)
     {
         _llm = llm;
+        _quickEditService = quickEditService;
+    }
+
+    public async Task<MessageIntent> ClassifyIntentAsync(string userMessage)
+    {
+        try
+        {
+            var response = await _llm.ClassifyIntentAsync(userMessage);
+            
+            return response.ToUpper().Trim() switch
+            {
+                "NEW" => MessageIntent.NewSurgery,
+                "MODIFY" => MessageIntent.ModifySurgery,
+                "CANCEL" => MessageIntent.CancelSurgery,
+                "QUERY" => MessageIntent.QuerySurgery,
+                "WEEKLY" => MessageIntent.WeeklyReport,
+                "MONTHLY" => MessageIntent.MonthlyReport,
+                "HELP" => MessageIntent.Help,
+                _ => MessageIntent.Unknown
+            };
+        }
+        catch
+        {
+            // Si falla la clasificación, asumir nueva cirugía por defecto
+            return MessageIntent.NewSurgery;
+        }
     }
 
     public async Task ProcessWithLLM(ITelegramBotClient bot, Appointment appt, string rawText, long chatId, CancellationToken ct)
@@ -48,7 +77,7 @@ public class FlowLLMProcessor
                 cancellationToken: ct);
 
             // Intentar confirmar o pedir siguiente campo
-            if (await FlowValidationHelper.TryConfirmation(bot, appt, chatId, ct)) return;
+            if (await FlowValidationHelper.TryConfirmation(bot, appt, chatId, ct, _quickEditService)) return;
             await FlowValidationHelper.RequestMissingField(bot, appt, chatId, ct);
         }
         else
@@ -62,11 +91,12 @@ public class FlowLLMProcessor
     private async Task HandleStandardProcessing(ITelegramBotClient bot, Appointment appt, 
         Dictionary<string, string> dict, long chatId, CancellationToken ct)
     {
+        
         ApplyAllFields(appt, dict);
 
         // Flujo normal: pedir faltantes o confirmar
         if (await FlowValidationHelper.RequestMissingField(bot, appt, chatId, ct)) return;
-        if (await FlowValidationHelper.TryConfirmation(bot, appt, chatId, ct)) return;
+        if (await FlowValidationHelper.TryConfirmation(bot, appt, chatId, ct, _quickEditService)) return;
 
         await MessageSender.SendWithRetry(chatId,
             "Enviá los datos que faltan (fecha/hora, lugar, cirujano, cirugía, cantidad, anestesiólogo).",

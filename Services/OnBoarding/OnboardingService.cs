@@ -10,6 +10,7 @@ using RegistroCx.Services.Repositories;
 using RegistroCx.Services;  // SendMessage extension
 using RegistroCx.Helpers._0Auth;
 using RegistroCx.ProgramServices.Services.Telegram; // IGoogleOAuthService
+using Microsoft.Extensions.Logging;
 
 namespace RegistroCx.Services.Onboarding
 {
@@ -18,15 +19,18 @@ namespace RegistroCx.Services.Onboarding
         private readonly IUserProfileRepository _repo;
         private readonly IUsuarioTelegramRepository _telegramRepo;
         private readonly IGoogleOAuthService _oauth;
+        private readonly ILogger<OnboardingService> _logger;
 
         public OnboardingService(
             IUserProfileRepository repo,
             IUsuarioTelegramRepository telegramRepo,
-            IGoogleOAuthService oauth)
+            IGoogleOAuthService oauth,
+            ILogger<OnboardingService> logger)
         {
             _repo = repo;
             _telegramRepo = telegramRepo;
             _oauth = oauth;
+            _logger = logger;
         }
 
         public async Task<(bool handled, UserProfile profile)> HandleAsync(
@@ -44,61 +48,132 @@ namespace RegistroCx.Services.Onboarding
             rawText ??= "";
             var lower = rawText.Trim().ToLowerInvariant();
             
-            // Obtener o crear perfil
-            var profile = await _repo.GetOrCreateAsync(chatId, ct);
+            _logger.LogInformation("[ONBOARDING-ENTRY] chatId: {chatId}, rawText: {rawText}, phoneFromContact: {phone}, telegramUserId: {telegramId}", 
+                chatId, rawText, phoneFromContact, telegramUserId);
             
-            // Actualizar datos de Telegram siempre
-            await UpdateTelegramData(profile, telegramUserId, firstName, lastName, username, languageCode, ct);
+            // Si hay teléfono compartido, buscar perfil existente o crear uno nuevo
+            UserProfile? profile = null;
+            if (!string.IsNullOrWhiteSpace(phoneFromContact))
+            {
+                var normalizedPhone = NormalizarTelefono(phoneFromContact);
+                var existingProfile = await _repo.FindByPhoneAsync(normalizedPhone, ct);
+                if (existingProfile != null)
+                {
+                    _logger.LogInformation("[ONBOARDING] Found existing profile by phone: {profileId}, currentChatId: {currentChatId}", 
+                        existingProfile.Id, existingProfile.ChatId);
+                    
+                    // Actualizar chat_id si es diferente
+                    if (existingProfile.ChatId != chatId)
+                    {
+                        await _repo.LinkChatIdByIdAsync(existingProfile.Id, chatId, ct);
+                        existingProfile.ChatId = chatId; // Actualizar el objeto en memoria también
+                        _logger.LogInformation("[ONBOARDING] Updated profile chat_id to: {chatId}", chatId);
+                    }
+                    
+                    profile = existingProfile;
+                }
+                else
+                {
+                    _logger.LogError("[ONBOARDING] No existing profile found for phone: {phone}. All users should exist beforehand.", normalizedPhone);
+                    // Como todos los usuarios deben existir de antemano, esto es un error
+                    await MessageSender.SendWithRetry(chatId,
+                        "Lo siento, no puedo encontrar tu perfil en el sistema. Por favor contacta al administrador.",
+                        cancellationToken: ct);
+                    return (true, new UserProfile { ChatId = chatId, State = UserState.NeedPhone });
+                }
+                
+                // Asegurar que el perfil tenga el teléfono correcto
+                //if (profile.Phone != normalizedPhone)
+                //{
+                    //profile.Phone = normalizedPhone;
+                    //await _repo.SaveAsync(profile, ct);
+                    //_logger.LogInformation("[ONBOARDING] Updated profile phone to: {phone}", normalizedPhone);
+                //}
+                
+                // Actualizar datos de Telegram solo cuando hay teléfono compartido
+                await _telegramRepo.UpdateTelegramDataByPhoneAsync(chatId, telegramUserId, firstName, username, normalizedPhone, ct);
+            }
+            else
+            {
+                // Sin teléfono compartido, intentar obtener perfil existente por chatId
+                profile = await _repo.GetAsync(chatId, ct);
+                _logger.LogInformation("[ONBOARDING] Existing profile by chatId found: {found}", profile != null);
+            }
 
             // /start, /ayuda o ayuda (incluyendo variaciones con errores tipográficos)
             if (lower == "/start" || lower == "/ayuda" || lower == "ayuda" || IsSimilarToHelp(lower))
             {
-                if (profile.State == UserState.Ready)
+                if (profile != null && profile.State == UserState.Ready)
                 {
                     await EnviarBienvenida(bot, chatId, ct);
                     return (true, profile);
                 }
                 
-                // Solo cambiar estado si es /start (no para ayuda)
-                if (lower == "/start")
-                {
-                    profile.State = UserState.NeedPhone;
-                    await _repo.SaveAsync(profile, ct);
-                }
-                
+                // Para /start sin perfil existente, solo enviar bienvenida (pedir teléfono)
                 await EnviarBienvenida(bot, chatId, ct);
-                return (true, profile);
+                
+                // Si hay perfil, devolverlo, sino devolver un perfil temporal para el tipo de retorno
+                if (profile != null)
+                {
+                    return (true, profile);
+                }
+                else
+                {
+                    // Crear perfil temporal solo para el retorno, no guardarlo en BD
+                    var tempProfile = new UserProfile { ChatId = chatId, State = UserState.NeedPhone };
+                    return (true, tempProfile);
+                }
             }
 
             // compartir teléfono
             if (!string.IsNullOrWhiteSpace(phoneFromContact))
             {
                 var normalizedPhone = NormalizarTelefono(phoneFromContact);
+                _logger.LogInformation("[PHONE-SHARING] Processing phone: {phone}, normalized: {normalizedPhone}", phoneFromContact, normalizedPhone);
                 
-                // TELÉFONO ES 1:1 - Verificar si ya existe un usuario con ese teléfono
-                var existingProfile = await _repo.FindByPhoneAsync(normalizedPhone, ct);
-                if (existingProfile != null && existingProfile.ChatId != chatId)
+                // Asegurar que el perfil tenga el teléfono correcto
+                if (profile != null && profile.Phone != normalizedPhone)
                 {
-                    // Teléfono único: actualizar ChatId del perfil existente y datos de Telegram
-                    await _repo.LinkChatIdAsync(existingProfile.ChatId, chatId, ct);
-                    existingProfile.ChatId = chatId;
-                    await UpdateTelegramData(existingProfile, telegramUserId, firstName, lastName, username, languageCode, ct);
-                    
-                    await MessageSender.SendWithRetry(chatId,
-                        $"¡Hola {await GetTelegramDisplayName(existingProfile.ChatId, ct)}! 👋\n\n" +
-                        "Te reconocí por tu teléfono. ¡Qué bueno que estés acá!\n\n" +
-                        "Tu perfil ya está configurado. Podés empezar a enviarme cirugías directamente.",
-                        cancellationToken: ct);
-                    return (true, existingProfile);
+                    profile.Phone = normalizedPhone;
+                    await _repo.SaveAsync(profile, ct);
+                    _logger.LogInformation("[PHONE-SHARING] Updated profile phone to: {phone}", normalizedPhone);
                 }
                 
-                profile.Phone = normalizedPhone;
-                profile.State = UserState.NeedEmail;
-                await _repo.SaveAsync(profile, ct);
-                await MessageSender.SendWithRetry(chatId,
-                            "Perfecto ✅. Ahora pasame tu email de Google (ej: nombre@gmail.com).",
-                            cancellationToken: ct);
+                // Actualizar usuarios_telegram buscando por teléfono primero
+                await _telegramRepo.UpdateTelegramDataByPhoneAsync(chatId, telegramUserId, firstName, username, normalizedPhone, ct);
+                
+                // Como todos los usuarios ya existen con teléfono y email, verificar el estado
+                if (profile != null && profile.State == UserState.Ready)
+                {
+                    await MessageSender.SendWithRetry(chatId,
+                        $"¡Hola {await GetTelegramDisplayName(profile.ChatId ?? chatId, ct)}! 👋\n\n" +
+                        "Te reconocí por tu teléfono. ¡Qué bueno que estés acá!\n\n" +
+                        "Tu perfil ya está configurado. Podés empezar a enviarme cirugías directamente.",
+                        replyMarkup: new ReplyKeyboardRemove(),
+                        cancellationToken: ct);
+                }
+                else
+                {
+                    // Usuario preexistente necesita autorizar calendario
+                    var displayName = await GetTelegramDisplayName(profile!.ChatId ?? chatId, ct);
+                    profile.State = UserState.NeedOAuth;
+                    await _repo.SaveAsync(profile, ct);
+                    
+                    await MessageSender.SendWithRetry(chatId,
+                        $"¡Hola {displayName}! 👋 ¿Cómo estás?\n\n" +
+                        $"Qué bueno verte por acá. Necesitamos que autorices el calendario de tu email <b>{profile.GoogleEmail}</b> para poder seguir adelante.\n\n" +
+                        "Escribí <b>continuar</b> para generar el enlace de autorización.",
+                        cancellationToken: ct);
+                }
+                
                 return (true, profile);
+            }
+
+            // Si no hay perfil válido, no se puede procesar más comandos
+            if (profile == null)
+            {
+                _logger.LogInformation("[ONBOARDING] No profile available, user needs to share phone first");
+                return (false, new UserProfile { ChatId = chatId, State = UserState.NeedPhone });
             }
 
             if (profile.State == UserState.Ready)
@@ -124,14 +199,15 @@ namespace RegistroCx.Services.Onboarding
                         if (existingProfile != null && existingProfile.ChatId != chatId)
                         {
                             // Teléfono único: actualizar ChatId del perfil existente y datos de Telegram
-                            await _repo.LinkChatIdAsync(existingProfile.ChatId, chatId, ct);
+                            await _repo.LinkChatIdByIdAsync(existingProfile.Id, chatId, ct);
                             existingProfile.ChatId = chatId;
                             await UpdateTelegramData(existingProfile, telegramUserId, firstName, lastName, username, languageCode, ct);
                             
                             await MessageSender.SendWithRetry(chatId,
-                                $"¡Hola {await GetTelegramDisplayName(existingProfile.ChatId, ct)}! 👋\n\n" +
+                                $"¡Hola {await GetTelegramDisplayName(existingProfile.ChatId ?? chatId, ct)}! 👋\n\n" +
                                 "Te reconocí por tu teléfono. ¡Qué bueno que estés acá!\n\n" +
                                 "Tu perfil ya está configurado. Podés empezar a enviarme cirugías directamente.",
+                                replyMarkup: new ReplyKeyboardRemove(),
                                 cancellationToken: ct);
                             return (true, existingProfile);
                         }
@@ -163,9 +239,10 @@ namespace RegistroCx.Services.Onboarding
                             await UpdateTelegramData(newProfile, telegramUserId, firstName, lastName, username, languageCode, ct);
                             
                             await MessageSender.SendWithRetry(chatId,
-                                $"¡Hola {await GetTelegramDisplayName(newProfile.ChatId, ct)}! 👋\n\n" +
+                                $"¡Hola {await GetTelegramDisplayName(newProfile.ChatId ?? chatId, ct)}! 👋\n\n" +
                                 "Te reconocí por tu email de equipo. ¡Qué bueno que estés acá!\n\n" +
                                 "Tu perfil ya está configurado con acceso al calendario compartido. Podés empezar a enviarme cirugías directamente.",
+                                replyMarkup: new ReplyKeyboardRemove(),
                                 cancellationToken: ct);
                             return (true, newProfile);
                         }
@@ -174,7 +251,7 @@ namespace RegistroCx.Services.Onboarding
                         profile.State = UserState.NeedOAuth;
                         await _repo.SaveAsync(profile, ct);
                         await MessageSender.SendWithRetry(chatId,
-                            "Genial ✅. Escribí *continuar* para autorizar Calendar.",
+                            "Genial ✅. Escribí <b>continuar</b> para autorizar Calendar.",
                             cancellationToken: ct);
                     }
                     else
@@ -195,13 +272,13 @@ namespace RegistroCx.Services.Onboarding
                         // Generar URL real
                         var url = _oauth.BuildAuthUrl(chatId, profile.GoogleEmail!);
                         await MessageSender.SendWithRetry(chatId,
-                            $"Abri este enlace para autorizar:\n{url}\nLuego escribí *ok*.",
+                            $"<a href=\"{url}\">Abri este enlace para autorizar</a>\n\nLuego escribí <b>ok</b>.",
                             cancellationToken: ct);
                     }
                     else
                     {
                         await MessageSender.SendWithRetry(chatId,
-                            "Escribí *continuar* para generar el enlace.",
+                            "Escribí <b>continuar</b> para generar el enlace.",
                             cancellationToken: ct);
                     }
                     return (true, profile);
@@ -214,12 +291,13 @@ namespace RegistroCx.Services.Onboarding
                         await _repo.SaveAsync(profile, ct);
                         await MessageSender.SendWithRetry(chatId,
                             "✅ Autorización completa. Ya podés enviar cirugías.",
+                            replyMarkup: new ReplyKeyboardRemove(),
                             cancellationToken: ct);
                     }
                     else
                     {
                         await MessageSender.SendWithRetry(chatId,
-                            "Cuando autorices, escribí *ok*.",
+                            "Cuando autorices, escribí <b>ok</b>.",
                             cancellationToken: ct);
                     }
                     return (true, profile);
@@ -230,35 +308,36 @@ namespace RegistroCx.Services.Onboarding
 
         private async Task EnviarBienvenida(ITelegramBotClient bot, long chatId, CancellationToken ct)
         {
-            var profile = await _repo.GetOrCreateAsync(chatId, ct);
+            var profile = await _repo.GetAsync(chatId, ct);
 
-            if (profile.State == UserState.Ready)
+            if (profile?.State == UserState.Ready)
             {
             var txt =
     @"¡Hola! 👋 Soy tu asistente inteligente para registrar cirugías.
 
-📋 **¿CÓMO FUNCIONA?**
+📋 <b>¿CÓMO FUNCIONA?</b>
 Simplemente escribime los datos de tu cirugía en lenguaje natural. Yo entiendo y organizo automáticamente:
 
-🔹 **Ejemplo:** ""23/08 2 CERS + 1 MLD quiroga ancho uri 14hs""
+🔹 <b>Ejemplo:</b> ""23/08 2 CERS + 1 MLD quiroga ancho uri 14hs""
 • Detectaré que son 3 cirugías diferentes
 • Extraeré fecha, hora, lugar, cirujano, etc.
 • Te pediré solo los datos que falten
 • Crearé eventos en tu Google Calendar
 
-✨ **CARACTERÍSTICAS:**
+✨ <b>CARACTERÍSTICAS:</b>
 • 🎤 Acepto mensajes de voz
 • 🔢 Proceso múltiples cirugías de una vez
 • 📅 Sincronización automática con Google Calendar
 • 💉 Invito anestesiólogos por email
 • ⚡ Edición granular (""cirugía 1 hora 16hs"")
 
-📊 **REPORTES:**
+📊 <b>REPORTES:</b>
 • **/semanal** - Resumen de esta semana
 • **/mensual** - Resumen del último mes
 
-🚀 **¡Empezá ahora!** Mandame cualquier cirugía y yo me encargo del resto.";
-            await MessageSender.SendWithRetry(chatId, txt, cancellationToken: ct);
+🚀 <b>¡Empezá ahora!</b> Mandame cualquier cirugía y yo me encargo del resto.";
+            // Remover teclado cuando el usuario ya está configurado
+            await MessageSender.SendWithRetry(chatId, txt, replyMarkup: new ReplyKeyboardRemove(), cancellationToken: ct);
             }
             else
             {
@@ -326,6 +405,29 @@ Simplemente escribime los datos de tu cirugía en lenguaje natural. Yo entiendo 
                 System.Text.RegularExpressions.RegexOptions.IgnoreCase);
 
         /// <summary>
+        /// Obtiene o crea un perfil de usuario simplificado:
+        /// 1. Busca por chat_id
+        /// 2. Si no encuentra, crea nuevo perfil
+        /// Nota: La lógica de vinculación por teléfono se maneja directamente en el flujo de sharing
+        /// </summary>
+        private async Task<UserProfile> GetOrCreateProfileSmartAsync(long chatId, string? phoneFromContact, long? telegramUserId, CancellationToken ct)
+        {
+            _logger.LogInformation("[GET-OR-CREATE-START] chatId: {chatId}", chatId);
+                
+            // 1. Intentar buscar por chat_id primero
+            var profile = await _repo.GetAsync(chatId, ct);
+            _logger.LogInformation("[GET-OR-CREATE] Profile by chatId found: {found}", profile != null);
+            if (profile != null)
+            {
+                return profile;
+            }
+
+            // 2. No existe, crear nuevo perfil
+            _logger.LogInformation("[GET-OR-CREATE] Creating new profile for chatId: {chatId}", chatId);
+            return await _repo.GetOrCreateAsync(chatId, ct);
+        }
+
+        /// <summary>
         /// Actualiza los datos de Telegram del perfil
         /// </summary>
         private async Task UpdateTelegramData(UserProfile profile, long? telegramUserId, string? firstName, string? lastName, string? username, string? languageCode, CancellationToken ct)
@@ -333,10 +435,11 @@ Simplemente escribime los datos de tu cirugía en lenguaje natural. Yo entiendo 
             if (telegramUserId.HasValue)
             {
                 await _telegramRepo.UpdateTelegramDataAsync(
-                    profile.ChatId,
+                    profile.ChatId ?? 0,
                     telegramUserId.Value,
                     firstName,
                     username,
+                    profile.Phone, // ✅ Incluir teléfono del perfil
                     ct: ct);
             }
         }

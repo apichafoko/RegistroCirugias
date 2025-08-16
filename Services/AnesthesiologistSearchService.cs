@@ -18,7 +18,7 @@ public class AnesthesiologistSearchService : IAnesthesiologistSearchService
 
     // Usar el mismo prompt ID que el existente
     private const string PromptId = "pmpt_688fff5af7e48190bdae049dcfdc44a5038f25fca90d0503";
-    private const string PromptVersion = "4";
+    private const string PromptVersion = "6";
 
     public AnesthesiologistSearchService(string apiKey)
     {

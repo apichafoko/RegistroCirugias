@@ -23,7 +23,7 @@ public static class MessageSender
         {
             try
             {
-                await Bot.SendMessage(chatId, message, parseMode: ParseMode.Markdown, replyMarkup: replyMarkup, cancellationToken: cancellationToken);
+                await Bot.SendMessage(chatId, message, parseMode: ParseMode.Html, replyMarkup: replyMarkup, cancellationToken: cancellationToken);
                 
                 return;
             }

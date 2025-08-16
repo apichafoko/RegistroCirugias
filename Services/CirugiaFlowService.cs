@@ -6,6 +6,10 @@ using RegistroCx.Services.Reports;
 using RegistroCx.Helpers._0Auth;
 using RegistroCx.Services.Repositories;
 using RegistroCx.ProgramServices.Services.Telegram;
+using RegistroCx.Services.Analytics;
+using RegistroCx.Services.Caching;
+using RegistroCx.Services.UI;
+using RegistroCx.models;
 using System.Text.RegularExpressions;
 
 namespace RegistroCx.Services;
@@ -57,6 +61,18 @@ public class CirugiaFlowService
     private readonly FlowLLMProcessor _llmProcessor;
     private readonly AppointmentConfirmationService _confirmationService;
     private readonly MultiSurgeryParser _multiSurgeryParser;
+    private readonly IUserProfileRepository _userRepo;
+    private readonly UserLearningService _learningService;
+    
+    // Nuevos servicios para modificación
+    private readonly AppointmentSearchService _searchService;
+    private readonly AppointmentModificationService _modificationService;
+    private readonly AppointmentUpdateCoordinator _updateCoordinator;
+    
+    // Servicios de MVP improvements
+    private readonly IParsingAnalyticsService _analytics;
+    private readonly ICacheService _cache;
+    private readonly IQuickEditService _quickEdit;
 
     public CirugiaFlowService(
         LLMOpenAIAssistant llm, 
@@ -68,16 +84,31 @@ public class CirugiaFlowService
         IAppointmentRepository appointmentRepo,
         MultiSurgeryParser multiSurgeryParser,
         IReportService reportService,
-        IAnesthesiologistSearchService anesthesiologistSearchService)
+        IAnesthesiologistSearchService anesthesiologistSearchService,
+        UserLearningService learningService,
+        AppointmentSearchService searchService,
+        AppointmentModificationService modificationService,
+        AppointmentUpdateCoordinator updateCoordinator,
+        IParsingAnalyticsService analytics,
+        ICacheService cache,
+        IQuickEditService quickEdit)
     {
         _llm = llm;
         _pending = pending;
         _confirmationService = confirmationService;
         _multiSurgeryParser = multiSurgeryParser;
+        _userRepo = userRepo;
+        _learningService = learningService;
+        _searchService = searchService;
+        _modificationService = modificationService;
+        _updateCoordinator = updateCoordinator;
+        _analytics = analytics;
+        _cache = cache;
+        _quickEdit = quickEdit;
         _stateManager = new FlowStateManager(_pending);
-        _messageHandler = new FlowMessageHandler(oauthService, userRepo, calendarSync, appointmentRepo, reportService);
-        _wizardHandler = new FlowWizardHandler(anesthesiologistSearchService, userRepo);
-        _llmProcessor = new FlowLLMProcessor(llm);
+        _messageHandler = new FlowMessageHandler(oauthService, userRepo, calendarSync, appointmentRepo, reportService, quickEdit);
+        _wizardHandler = new FlowWizardHandler(anesthesiologistSearchService, userRepo, analytics, quickEdit);
+        _llmProcessor = new FlowLLMProcessor(llm, quickEdit);
     }
 
     public async Task HandleAsync(ITelegramBotClient bot, long chatId, string rawText, CancellationToken ct)
@@ -92,9 +123,51 @@ public class CirugiaFlowService
         // INMEDIATO: Enviar mensaje de "Procesando..." para reducir ansiedad del usuario
         await MessageSender.SendWithRetry(chatId, "⏳ Procesando...", cancellationToken: ct);
 
+        // 1. CLASIFICAR INTENT del mensaje
+        var intent = await _llmProcessor.ClassifyIntentAsync(rawText);
+        
+        // 2. Manejar intents de modificación
+        if (intent == MessageIntent.ModifySurgery)
+        {
+            await HandleModificationAsync(bot, chatId, rawText, ct);
+            return;
+        }
+        
+        // 3. Manejar intents de cancelación
+        if (intent == MessageIntent.CancelSurgery)
+        {
+            await HandleCancellationAsync(bot, chatId, rawText, ct);
+            return;
+        }
+        
+        // 4. Manejar intents de consulta
+        if (intent == MessageIntent.QuerySurgery)
+        {
+            await HandleQueryAsync(bot, chatId, rawText, ct);
+            return;
+        }
+
         // Obtener o crear appointment
         var appt = _stateManager.GetOrCreateAppointment(chatId);
         appt.HistoricoInputs.Add(rawText);
+
+        // Manejar continuación después de warning de validación
+        if (!string.IsNullOrEmpty(appt.ValidationWarning) && 
+            rawText.Trim().ToLowerInvariant() is "continuar" or "ok" or "continúar" or "si" or "sí")
+        {
+            Console.WriteLine("[FLOW] User confirmed to continue after validation warning");
+            // Limpiar el warning y continuar con el flujo normal
+            appt.ValidationWarning = null;
+            // El input original está en HistoricoInputs[^2] (penúltimo)
+            if (appt.HistoricoInputs.Count >= 2)
+            {
+                var originalInput = appt.HistoricoInputs[^2];
+                Console.WriteLine($"[FLOW] Continuing with original input: {originalInput}");
+                // Procesar el input original sin validaciones
+                await _llmProcessor.ProcessWithLLM(bot, appt, originalInput, chatId, ct);
+                return;
+            }
+        }
 
         // Manejar captura de email del anestesiólogo
         if (await HandleEmailCapture(bot, appt, rawText, chatId, ct))
@@ -163,11 +236,57 @@ public class CirugiaFlowService
             return;
         }
         
-        // NUEVO: Detectar múltiples cirugías ANTES del procesamiento LLM
+        // NUEVO: Detectar múltiples cirugías ANTES del procesamiento LLM con validaciones completas
         if (appt.HistoricoInputs.Count == 1) // Solo para el primer input del usuario
         {
-            Console.WriteLine("[FLOW] First user input - checking for multiple surgeries");
-            var parseResult = await _multiSurgeryParser.ParseInputAsync(rawText);
+            Console.WriteLine("[FLOW] First user input - checking for multiple surgeries with validation");
+            
+            // Obtener perfil del usuario para acceso a listas de referencia
+            var profile = await _userRepo.GetAsync(chatId, ct);
+            // TODO: Implementar GetListasReferencia() en UserProfile cuando sea necesario
+            var listasObj = (object?)null; // Por ahora null, el sistema funcionará sin listas específicas
+            var referenceDate = DateTime.Now;
+            
+            var parseResult = await _multiSurgeryParser.ParseInputAsync(rawText, referenceDate, listasObj, chatId);
+            
+            // Manejar problemas de validación según severidad
+            if (parseResult.ValidationStatus == "error" || 
+                (parseResult.ValidationStatus == "warning" && parseResult.NeedsClarification))
+            {
+                Console.WriteLine($"[FLOW] ⚠️ Validation issues found: {parseResult.ValidationStatus}");
+                
+                // Enviar respuesta de validación al usuario
+                var responseMessage = parseResult.SuggestedResponse ?? "No entiendo ese tipo de mensaje. ¿Podrías ser más específico?";
+                
+                // Para warnings, agregar opción de continuar
+                if (parseResult.ValidationStatus == "warning")
+                {
+                    responseMessage += "\n\n💡 Si querés continuar de todas formas, escribí 'continuar' o 'ok'.";
+                }
+                
+                // Agregar información de problemas específicos si los hay
+                if (parseResult.Issues.Any())
+                {
+                    var issueMessages = string.Join("\n", parseResult.Issues.Select(i => $"• {i.Message}"));
+                    responseMessage += $"\n\n{issueMessages}";
+                }
+                
+                await MessageSender.SendWithRetry(chatId, responseMessage, cancellationToken: ct);
+                
+                // Para errors: limpiar contexto inmediatamente
+                // Para warnings: guardar estado para permitir continuar si el usuario confirma
+                if (parseResult.ValidationStatus == "error")
+                {
+                    _stateManager.ClearContext(chatId);
+                }
+                else
+                {
+                    // Guardar el parseResult en el appointment para manejarlo en la próxima iteración
+                    appt.ValidationWarning = parseResult.SuggestedResponse;
+                }
+                
+                return;
+            }
             
             if (parseResult.IsMultiple)
             {
@@ -195,6 +314,44 @@ public class CirugiaFlowService
     private async Task<bool> HandleConfirmationFlow(ITelegramBotClient bot, Appointment appt, string rawText, long chatId, CancellationToken ct)
     {
         var inputLower = rawText.Trim().ToLowerInvariant();
+        
+        // NUEVO: Verificar si es una confirmación de modificación
+        if (appt.ModificationContext?.IsAwaitingConfirmation == true)
+        {
+            if (inputLower is "si" or "sí" or "ok" or "dale" or "confirmo" or "confirmar")
+            {
+                // Ejecutar la modificación
+                var success = await _updateCoordinator.ExecuteModificationAsync(
+                    appt.ModificationContext.OriginalAppointment!, 
+                    appt.ModificationContext.RequestedChanges!, 
+                    chatId, 
+                    ct);
+                
+                // Limpiar contexto
+                appt.ModificationContext = null;
+                _stateManager.ClearContext(chatId);
+                
+                return true;
+            }
+            else if (inputLower.StartsWith("no"))
+            {
+                await MessageSender.SendWithRetry(chatId,
+                    "❌ Modificación cancelada. Los datos originales se mantienen sin cambios.",
+                    cancellationToken: ct);
+                
+                appt.ModificationContext = null;
+                _stateManager.ClearContext(chatId);
+                
+                return true;
+            }
+            
+            // Si no es ni sí ni no, pedir confirmación clara
+            await MessageSender.SendWithRetry(chatId,
+                "❓ Por favor confirma con 'sí' o 'no' si querés realizar estos cambios.",
+                cancellationToken: ct);
+            
+            return true;
+        }
         
         // Verificar si es una confirmación de múltiples cirugías
         if (appt.ConfirmacionPendiente && !string.IsNullOrWhiteSpace(appt.Notas) && 
@@ -403,7 +560,13 @@ public class CirugiaFlowService
         try
         {
             // Extraer número de cirugías del marker
-            var countStr = markerAppt.Notas.Split(':')[1];
+            var parts = markerAppt.Notas?.Split(':');
+            if (parts == null || parts.Length < 2)
+            {
+                await MessageSender.SendWithRetry(chatId, "❌ Error procesando confirmación múltiple - formato inválido.", cancellationToken: ct);
+                return;
+            }
+            var countStr = parts[1];
             if (!int.TryParse(countStr, out var surgeryCount))
             {
                 await MessageSender.SendWithRetry(chatId, "❌ Error procesando confirmación múltiple.", cancellationToken: ct);
@@ -518,7 +681,7 @@ public class CirugiaFlowService
         try
         {
             // Extraer número de cirugías del marker
-            var countStr = markerAppt.Notas.Split(':')[1];
+            var countStr = markerAppt.Notas?.Split(':')[1];
             if (!int.TryParse(countStr, out var surgeryCount))
             {
                 await MessageSender.SendWithRetry(chatId, "❌ Error procesando edición múltiple.", cancellationToken: ct);
@@ -1057,11 +1220,12 @@ public class CirugiaFlowService
                       $"💉 {appt.Anestesiologo}\n\n";
         }
 
-        summary += $"🔥 **Total: {appointments.Count} cirugías programadas**\n\n" +
-                   "🚀 **¿Confirmar TODAS las cirugías?**\n" +
-                   "Responde **'confirmar todas'** o **'si'** para crear todas en el calendario y base de datos.";
+        summary += $"🔥 **Total: {appointments.Count} cirugías programadas**";
 
-        await MessageSender.SendWithRetry(chatId, summary, cancellationToken: ct);
+        // En lugar de texto simple, usar botones de edición rápida para múltiples cirugías
+        // Nota: Para múltiples cirugías, por ahora seguimos con el método tradicional
+        // TODO: Implementar botones individuales para cada cirugía
+        await MessageSender.SendWithRetry(chatId, summary + "\n\n🚀 **¿Confirmar TODAS las cirugías?**\nResponde **'confirmar todas'** o **'si'** para crear todas.", cancellationToken: ct);
 
         // Guardar todas las cirugías temporalmente para confirmación global
         for (int i = 0; i < appointments.Count; i++)
@@ -1114,6 +1278,7 @@ public class CirugiaFlowService
 
     private async Task<string> CallLLMDirectly(string input)
     {
+        var startTime = DateTime.UtcNow;
         try
         {
             // Usar el mismo formato que usa FlowLLMProcessor pero sin enviar mensajes
@@ -1140,9 +1305,13 @@ IMPORTANTE: Devuelve ÚNICAMENTE JSON válido, sin texto adicional.";
 
             // Usar el método correcto que usa el sistema actual
             var dict = await _llm.ExtractWithPublishedPromptAsync(input, DateTime.Today);
+            var duration = DateTime.UtcNow - startTime;
             
             if (dict != null && dict.Count > 0)
             {
+                // Log successful parsing
+                await _analytics.LogParsingSuccessAsync(input, dict);
+                await _analytics.LogParsingPerformanceAsync("llm_extraction", duration, true);
                 // Convertir el dictionary a JSON string para parsing
                 var jsonParts = new List<string>();
                 foreach (var kvp in dict)
@@ -1153,12 +1322,21 @@ IMPORTANTE: Devuelve ÚNICAMENTE JSON válido, sin texto adicional.";
                 var jsonResponse = "{" + string.Join(", ", jsonParts) + "}";
                 return jsonResponse;
             }
+            else
+            {
+                // Log empty response as warning
+                await _analytics.LogParsingWarningAsync("empty_llm_response", input, "LLM returned empty or null response");
+                await _analytics.LogParsingPerformanceAsync("llm_extraction", duration, false);
+            }
             
             return string.Empty;
         }
         catch (Exception ex)
         {
             Console.WriteLine($"[LLM-DIRECT] Error calling LLM: {ex}");
+            var duration = DateTime.UtcNow - startTime;
+            await _analytics.LogParsingErrorAsync("llm_extraction_exception", input, ex.Message);
+            await _analytics.LogParsingPerformanceAsync("llm_extraction", duration, false);
             return string.Empty;
         }
     }
@@ -1231,6 +1409,117 @@ IMPORTANTE: Devuelve ÚNICAMENTE JSON válido, sin texto adicional.";
             Console.WriteLine($"[LLM-PARSER] Error extracting field {fieldName}: {ex}");
         }
     }
+
+    #region Modification Handlers
+
+    private async Task HandleModificationAsync(ITelegramBotClient bot, long chatId, string rawText, CancellationToken ct)
+    {
+        try
+        {
+            // 1. Buscar appointment(s) que coincidan
+            var searchResult = await _searchService.FindCandidatesAsync(chatId, rawText, DateTime.Today);
+            
+            // 2. Manejar casos ambiguos o no encontrados
+            if (!await _updateCoordinator.HandleAmbiguousSearch(searchResult, rawText, chatId, ct))
+            {
+                return;
+            }
+            
+            // 3. Una sola coincidencia encontrada
+            var appointment = searchResult.SingleResult!;
+            
+            // 4. Parsear qué modificaciones quiere hacer
+            var modifications = await _modificationService.ParseModificationAsync(appointment, rawText);
+            
+            if (!modifications.HasChanges)
+            {
+                await MessageSender.SendWithRetry(chatId,
+                    "❓ No pude identificar qué querés modificar. Podés decir algo como:\n" +
+                    "• \"cambiar la hora a las 16hs\"\n" +
+                    "• \"mover al sanatorio\"\n" +
+                    "• \"cambiar cirujano a garcía\"",
+                    cancellationToken: ct);
+                return;
+            }
+            
+            // 5. Mostrar resumen y confirmar
+            var summary = _modificationService.GenerateModificationSummary(appointment, modifications);
+            summary += "\n\n¿Confirmar estos cambios? (sí/no)";
+            
+            await MessageSender.SendWithRetry(chatId, summary, cancellationToken: ct);
+            
+            // 6. Guardar en contexto para confirmación
+            var modificationContext = new ModificationContext
+            {
+                OriginalAppointment = appointment,
+                RequestedChanges = modifications,
+                IsAwaitingConfirmation = true
+            };
+            
+            // Usar el appointment en pending para guardar el contexto
+            var contextAppt = _stateManager.GetOrCreateAppointment(chatId);
+            contextAppt.ModificationContext = modificationContext;
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[MODIFICATION] Error: {ex}");
+            await MessageSender.SendWithRetry(chatId,
+                "❌ Hubo un error procesando la modificación. Por favor, intenta nuevamente.",
+                cancellationToken: ct);
+        }
+    }
+
+    private async Task HandleCancellationAsync(ITelegramBotClient bot, long chatId, string rawText, CancellationToken ct)
+    {
+        await MessageSender.SendWithRetry(chatId,
+            "🚧 La funcionalidad de cancelación está en desarrollo. Por ahora podés modificar la cirugía o contactar directamente.",
+            cancellationToken: ct);
+    }
+
+    private async Task HandleQueryAsync(ITelegramBotClient bot, long chatId, string rawText, CancellationToken ct)
+    {
+        try
+        {
+            // Buscar appointments que coincidan
+            var searchResult = await _searchService.FindCandidatesAsync(chatId, rawText, DateTime.Today);
+            
+            if (searchResult.NotFound)
+            {
+                await MessageSender.SendWithRetry(chatId,
+                    "❌ No encontré cirugías que coincidan con tu consulta.",
+                    cancellationToken: ct);
+                return;
+            }
+            
+            var message = searchResult.IsAmbiguous ? 
+                "📋 Encontré estas cirugías:\n\n" : 
+                "📋 Información de la cirugía:\n\n";
+            
+            foreach (var appointment in searchResult.Candidates)
+            {
+                message += $"📅 {appointment.FechaHora?.ToString("dd/MM/yyyy HH:mm")}\n";
+                message += $"📍 {appointment.Lugar}\n";
+                message += $"👨‍⚕️ {appointment.Cirujano}\n";
+                message += $"🏥 {appointment.Cirugia} (x{appointment.Cantidad})\n";
+                
+                if (!string.IsNullOrEmpty(appointment.Anestesiologo))
+                    message += $"💉 {appointment.Anestesiologo}\n";
+                
+                message += "\n";
+            }
+            
+            await MessageSender.SendWithRetry(chatId, message, cancellationToken: ct);
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[QUERY] Error: {ex}");
+            await MessageSender.SendWithRetry(chatId,
+                "❌ Hubo un error procesando tu consulta.",
+                cancellationToken: ct);
+        }
+    }
+
+    #endregion
 
     // Métodos públicos para gestión
     public void ReiniciarConversacion(long chatId) => _stateManager.ClearContext(chatId);

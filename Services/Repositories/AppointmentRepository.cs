@@ -5,6 +5,7 @@ using Dapper;
 using Npgsql;
 using NpgsqlTypes;
 using RegistroCx.Models;
+using RegistroCx.models;
 
 namespace RegistroCx.Services.Repositories;
 
@@ -29,7 +30,6 @@ public class AppointmentRepository : IAppointmentRepository
             csb.Username = userInfo[0];
             csb.Password = userInfo.Length > 1 ? userInfo[1] : "";
             csb.Database = uri.AbsolutePath.TrimStart('/');
-            csb.TrustServerCertificate = true;
 
             // leer parámetros de query
             var qp = System.Web.HttpUtility.ParseQueryString(uri.Query);
@@ -257,6 +257,98 @@ public class AppointmentRepository : IAppointmentRepository
         var startDate = new DateTime(year, 1, 1);
         var endDate = new DateTime(year, 12, 31, 23, 59, 59);
         return await GetAppointmentsByDateRangeAsync(googleEmail, startDate, endDate, ct);
+    }
+
+    public async Task<List<Appointment>> GetByUserAndDateRangeAsync(long chatId, DateTime startDate, DateTime endDate, CancellationToken ct = default)
+    {
+        using var conn = await OpenAsync(ct);
+        
+        const string sql = @"
+            SELECT id, chat_id, fecha_hora, lugar, cirujano, cirugia, cantidad, anestesiologo, 
+                   calendar_event_id, calendar_synced_at, reminder_sent_at, created_at, updated_at
+            FROM appointments 
+            WHERE chat_id = @chatId 
+              AND fecha_hora >= @startDate 
+              AND fecha_hora <= @endDate
+            ORDER BY fecha_hora ASC";
+
+        var results = await conn.QueryAsync<dynamic>(sql, new { chatId, startDate, endDate });
+        
+        return results.Select(r => new Appointment
+        {
+            Id = r.id,
+            ChatId = r.chat_id,
+            FechaHora = r.fecha_hora,
+            Lugar = r.lugar,
+            Cirujano = r.cirujano,
+            Cirugia = r.cirugia,
+            Cantidad = r.cantidad,
+            Anestesiologo = r.anestesiologo,
+            CalendarEventId = r.calendar_event_id,
+            CalendarSyncedAt = r.calendar_synced_at,
+            ReminderSentAt = r.reminder_sent_at
+        }).ToList();
+    }
+
+    public async Task UpdateAsync(long appointmentId, ModificationRequest changes, CancellationToken ct = default)
+    {
+        using var conn = await OpenAsync(ct);
+        
+        var updates = new List<string>();
+        var parameters = new DynamicParameters();
+        parameters.Add("id", appointmentId);
+
+        if (changes.NewDate.HasValue || changes.NewTime.HasValue)
+        {
+            // Obtener appointment actual para combinar fecha y hora
+            var current = await GetByIdAsync(appointmentId, ct);
+            if (current?.FechaHora.HasValue == true)
+            {
+                var newDate = changes.NewDate ?? current.FechaHora.Value.Date;
+                var newTime = changes.NewTime ?? TimeOnly.FromDateTime(current.FechaHora.Value);
+                var newDateTime = newDate.Add(newTime.ToTimeSpan());
+                
+                updates.Add("fecha_hora = @fechaHora");
+                parameters.Add("fechaHora", newDateTime);
+            }
+        }
+
+        if (!string.IsNullOrEmpty(changes.NewLocation))
+        {
+            updates.Add("lugar = @lugar");
+            parameters.Add("lugar", changes.NewLocation);
+        }
+
+        if (!string.IsNullOrEmpty(changes.NewSurgeon))
+        {
+            updates.Add("cirujano = @cirujano");
+            parameters.Add("cirujano", changes.NewSurgeon);
+        }
+
+        if (!string.IsNullOrEmpty(changes.NewSurgeryType))
+        {
+            updates.Add("cirugia = @cirugia");
+            parameters.Add("cirugia", changes.NewSurgeryType);
+        }
+
+        if (changes.NewQuantity.HasValue)
+        {
+            updates.Add("cantidad = @cantidad");
+            parameters.Add("cantidad", changes.NewQuantity.Value);
+        }
+
+        if (!string.IsNullOrEmpty(changes.NewAnesthesiologist))
+        {
+            updates.Add("anestesiologo = @anestesiologo");
+            parameters.Add("anestesiologo", changes.NewAnesthesiologist);
+        }
+
+        if (updates.Any())
+        {
+            updates.Add("updated_at = now()");
+            var sql = $"UPDATE appointments SET {string.Join(", ", updates)} WHERE id = @id";
+            await conn.ExecuteAsync(sql, parameters);
+        }
     }
 }
 

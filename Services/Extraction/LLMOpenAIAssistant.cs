@@ -21,11 +21,19 @@ namespace RegistroCx.Services.Extraction
 
         // Copia estos valores exactamente desde tu Dashboard → Deploy → Prompt ID / Version
         private const string PromptId      = "pmpt_688fff5af7e48190bdae049dcfdc44a5038f25fca90d0503";
-        private const string PromptVersion = "4";
+        private const string PromptVersion = "6";
         
         // Prompt para detección de múltiples cirugías (actualizado para evitar duplicados)
         private const string MultiSurgeryPromptId      = "pmpt_689a0e6ad6988193a39feb176a30b80d0437b8506c01cf3d";
-        private const string MultiSurgeryPromptVersion = "1";
+        private const string MultiSurgeryPromptVersion = "2";
+        
+        // Prompt para clasificación de intents
+        private const string IntentClassificationPromptId      = "pmpt_68a0f4164bbc81909e7066dd9486ccf30687ba563fc8837c"; 
+        private const string IntentClassificationPromptVersion = "1";
+        
+        // Prompt para parsing de modificaciones
+        private const string ModificationParsingPromptId      = "pmpt_68a0f476cdac8196b067a86fd89d45200e7279f7018ae4c2"; 
+        private const string ModificationParsingPromptVersion = "1";
 
         public LLMOpenAIAssistant(string apiKey)
         {
@@ -118,14 +126,24 @@ namespace RegistroCx.Services.Extraction
         }
         
         /// <summary>
-        /// Detecta múltiples cirugías usando el prompt específico para múltiples cirugías
+        /// Detecta múltiples cirugías usando el prompt específico para múltiples cirugías con validaciones completas
         /// </summary>
-        public async Task<Dictionary<string, string>> ExtractMultipleSurgeriesAsync(string userText)
+        public async Task<Dictionary<string, string>> ExtractMultipleSurgeriesAsync(string userText, DateTime referenceDate, object? listasObj = null, string? contextPersonalizado = null)
         {
+            // Usar el mismo builder que el prompt principal para mantener consistencia
+            var inputText = RegistroCx.Helpers.OpenAI.CirugiaUserMessageBuilder.Build(
+                referenceDate,
+                listasObj,
+                userText,
+                metadatosExtra: null,
+                incluirEjemploSeccionMetadatos: false,
+                contextPersonalizado: contextPersonalizado
+            );
+
             var body = new
             {
                 prompt = new { id = MultiSurgeryPromptId, version = MultiSurgeryPromptVersion },
-                input  = userText
+                input  = inputText
             };
 
            // Serializar y depurar el JSON
@@ -188,6 +206,114 @@ namespace RegistroCx.Services.Extraction
             
             // Para múltiples cirugías, necesitamos retornar el JSON raw, no parseado
             return new Dictionary<string, string> { ["raw_response"] = assistantText.Trim() };
+        }
+
+        /// <summary>
+        /// Clasifica el intent del usuario usando el prompt específico
+        /// </summary>
+        public async Task<string> ClassifyIntentAsync(string userMessage)
+        {
+            var body = new
+            {
+                prompt_id = IntentClassificationPromptId,
+                prompt_version = IntentClassificationPromptVersion,
+                input = userMessage
+            };
+
+            var json = JsonSerializer.Serialize(body, _jsonOptions);
+            var content = new StringContent(json, Encoding.UTF8, "application/json");
+
+            var response = await _http.PostAsync("/v1/responses", content);
+            response.EnsureSuccessStatusCode();
+
+            var responseBody = await response.Content.ReadAsStringAsync();
+            var doc = JsonDocument.Parse(responseBody);
+
+            // Extraer la respuesta del assistant
+            string? assistantText = null;
+            if (doc.RootElement.TryGetProperty("data", out var data) &&
+                data.TryGetProperty("response", out var responseObj) &&
+                responseObj.TryGetProperty("body", out var body_) &&
+                body_.TryGetProperty("choices", out var choices) &&
+                choices.GetArrayLength() > 0)
+            {
+                var firstChoice = choices[0];
+                if (firstChoice.TryGetProperty("message", out var message) &&
+                    message.TryGetProperty("content", out var contentArray) &&
+                    contentArray.ValueKind == JsonValueKind.Array)
+                {
+                    foreach (var part in contentArray.EnumerateArray())
+                    {
+                        if (part.TryGetProperty("type", out var partTypeProperty) &&
+                            partTypeProperty.GetString() == "output_text" &&
+                            part.TryGetProperty("text", out var textProperty))
+                        {
+                            assistantText = textProperty.GetString()!;
+                            break;
+                        }
+                    }
+                }
+            }
+
+            if (assistantText == null)
+                throw new Exception("No se encontró respuesta en la clasificación de intent.");
+
+            return assistantText.Trim().ToUpper();
+        }
+
+        /// <summary>
+        /// Parsea las modificaciones solicitadas usando el prompt específico
+        /// </summary>
+        public async Task<string> ParseModificationAsync(string originalData, string userRequest)
+        {
+            var input = originalData + "\n\nSOLICITUD DEL USUARIO: " + userRequest;
+            
+            var body = new
+            {
+                prompt_id = ModificationParsingPromptId,
+                prompt_version = ModificationParsingPromptVersion,
+                input = input
+            };
+
+            var json = JsonSerializer.Serialize(body, _jsonOptions);
+            var content = new StringContent(json, Encoding.UTF8, "application/json");
+
+            var response = await _http.PostAsync("/v1/responses", content);
+            response.EnsureSuccessStatusCode();
+
+            var responseBody = await response.Content.ReadAsStringAsync();
+            var doc = JsonDocument.Parse(responseBody);
+
+            // Extraer la respuesta del assistant
+            string? assistantText = null;
+            if (doc.RootElement.TryGetProperty("data", out var data) &&
+                data.TryGetProperty("response", out var responseObj) &&
+                responseObj.TryGetProperty("body", out var body_) &&
+                body_.TryGetProperty("choices", out var choices) &&
+                choices.GetArrayLength() > 0)
+            {
+                var firstChoice = choices[0];
+                if (firstChoice.TryGetProperty("message", out var message) &&
+                    message.TryGetProperty("content", out var contentArray) &&
+                    contentArray.ValueKind == JsonValueKind.Array)
+                {
+                    foreach (var part in contentArray.EnumerateArray())
+                    {
+                        if (part.TryGetProperty("type", out var partTypeProperty) &&
+                            partTypeProperty.GetString() == "output_text" &&
+                            part.TryGetProperty("text", out var textProperty))
+                        {
+                            assistantText = textProperty.GetString()!;
+                            break;
+                        }
+                    }
+                }
+            }
+
+            if (assistantText == null)
+                throw new Exception("No se encontró respuesta en el parsing de modificación.");
+
+            return assistantText.Trim();
         }
     }
 }

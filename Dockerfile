@@ -1,10 +1,10 @@
 # Usar la imagen oficial de .NET 9.0 específicamente
-FROM mcr.microsoft.com/dotnet/aspnet:9.0-jammy AS base
+FROM mcr.microsoft.com/dotnet/aspnet:9.0 AS base
 WORKDIR /app
 EXPOSE 8080
 
 # Usar la imagen de SDK para build con versión específica
-FROM mcr.microsoft.com/dotnet/sdk:9.0-jammy AS build
+FROM mcr.microsoft.com/dotnet/sdk:9.0 AS build
 WORKDIR /src
 
 # Copiar el archivo de proyecto y restaurar dependencias

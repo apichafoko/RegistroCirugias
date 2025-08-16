@@ -3,6 +3,7 @@ using RegistroCx.Models;
 using RegistroCx.Helpers;
 using RegistroCx.ProgramServices.Services.Telegram;
 using RegistroCx.Services;
+using RegistroCx.Services.UI;
 using RegistroCx.Helpers._0Auth;
 using RegistroCx.Services.Repositories;
 using RegistroCx.Services.Reports;
@@ -16,28 +17,85 @@ public class FlowMessageHandler
     private readonly CalendarSyncService _calendarSync;
     private readonly IAppointmentRepository _appointmentRepo;
     private readonly IReportService _reportService;
+    private readonly IQuickEditService? _quickEditService;
 
     public FlowMessageHandler(
         IGoogleOAuthService oauthService, 
         IUserProfileRepository userRepo, 
         CalendarSyncService calendarSync,
         IAppointmentRepository appointmentRepo,
-        IReportService reportService)
+        IReportService reportService,
+        IQuickEditService? quickEditService = null)
     {
         _oauthService = oauthService;
         _userRepo = userRepo;
         _calendarSync = calendarSync;
         _appointmentRepo = appointmentRepo;
         _reportService = reportService;
+        _quickEditService = quickEditService;
     }
     public async Task<bool> HandleSpecialCommandsAsync(ITelegramBotClient bot, long chatId, string rawText, CancellationToken ct)
     {
         var textLower = rawText.Trim().ToLowerInvariant();
         
-        if (textLower is "/start" or "/reset" or "/reiniciar" or "reiniciar" or "cancelar" or "empezar de nuevo")
+        // Comandos de reinicio y cancelación (expandidos)
+        if (textLower is "/start" or "/reset" or "/reiniciar" or "reiniciar" or "cancelar" or "empezar de nuevo" or
+            "cancel" or "borrar" or "eliminar" or "cancelá" or "borrá" or "eliminá" or "empezar otra vez" or
+            "nuevo" or "otra cirugia" or "otra cirugía")
         {
             await MessageSender.SendWithRetry(chatId,
                 "✨ Perfecto, empezamos de nuevo. Contame los datos de la cirugía que querés agendar.",
+                cancellationToken: ct);
+            return true;
+        }
+
+        // Mensajes de cancelación de cirugías existentes
+        if (textLower.Contains("cancela") && (textLower.Contains("cirug") || textLower.Contains("mañana") || textLower.Contains("hoy") || textLower.Contains("ayer")))
+        {
+            await MessageSender.SendWithRetry(chatId,
+                "Para cancelar cirugías ya agendadas, necesitás contactar directamente al centro quirúrgico o a tu coordinador. Yo solo te ayudo a registrar nuevas cirugías.\n\n¿Querés agendar alguna cirugía nueva?",
+                cancellationToken: ct);
+            return true;
+        }
+
+        // Saludos y mensajes sociales (expandidos)
+        if (textLower is "hola" or "hello" or "hi" or "buenas" or "buen día" or "buenos días" or "buenas tardes" or "buenas noches" or
+            "¿cómo estás?" or "como estas?" or "¿cómo andás?" or "como andas?" or "¿qué tal?" or "que tal?" or
+            "hola, ¿cómo estás?" or "hola como estas" or "hola que tal" or "gracias" or "muchas gracias" or "ok gracias" or
+            "perfecto" or "genial" or "excelente" or "muy bien" or "está bien" or "todo bien" or
+            "chau" or "adiós" or "hasta luego" or "nos vemos" or "bye")
+        {
+            var response = textLower.Contains("grac") || textLower.Contains("perfecto") || textLower.Contains("genial") || textLower.Contains("excelente") ?
+                "¡De nada! 😊 Cualquier cosa que necesites, acá estoy. ¿Tenés alguna cirugía más para agendar?" :
+                textLower.Contains("chau") || textLower.Contains("adiós") || textLower.Contains("hasta") || textLower.Contains("bye") ?
+                "¡Hasta luego! 👋 Que tengas un buen día. Cuando necesites agendar cirugías, ya sabés dónde encontrarme." :
+                "¡Hola! Muy bien, gracias 😊\n\nSoy tu asistente para registrar cirugías. Solo escribime los datos como:\n\n📝 <b>Ejemplo:</b> \"mañana 2 cers quiroga callao 14hs\"\n\n¿Tenés alguna cirugía para agendar?";
+            
+            await MessageSender.SendWithRetry(chatId, response, cancellationToken: ct);
+            return true;
+        }
+
+        // Preguntas sobre funcionamiento
+        if (textLower.Contains("¿cómo funciona") || textLower.Contains("como funciona") || 
+            textLower.Contains("¿qué hac") || textLower.Contains("que hac") ||
+            textLower.Contains("ayuda") || textLower.Contains("/help") ||
+            textLower.Contains("¿para qué") || textLower.Contains("para que") ||
+            textLower.Contains("explicame") || textLower.Contains("explícame"))
+        {
+            await MessageSender.SendWithRetry(chatId,
+                "📋 <b>¿CÓMO FUNCIONA?</b>\n" +
+                "Simplemente escribime los datos de tu cirugía en lenguaje natural. Yo entiendo y organizo automáticamente:\n\n" +
+                "🔹 <b>Ejemplo:</b> \"23/08 2 CERS + 1 MLD quiroga ancho uri 14hs\"\n" +
+                "• Detectaré que son 3 cirugías diferentes\n" +
+                "• Extraeré fecha, hora, lugar, cirujano, etc.\n" +
+                "• Te pediré solo los datos que falten\n" +
+                "• Crearé eventos en tu Google Calendar\n\n" +
+                "✨ <b>CARACTERÍSTICAS:</b>\n" +
+                "• 🎤 Acepto mensajes de voz\n" +
+                "• 🔢 Proceso múltiples cirugías de una vez\n" +
+                "• 📅 Sincronización automática con Google Calendar\n" +
+                "• 💉 Invito anestesiólogos por email\n\n" +
+                "🚀 <b>¡Empezá ahora!</b> Mandame cualquier cirugía y yo me encargo del resto.",
                 cancellationToken: ct);
             return true;
         }
@@ -394,7 +452,7 @@ public class FlowMessageHandler
 
     private async Task TryConfirmation(ITelegramBotClient bot, Appointment appt, long chatId, CancellationToken ct)
     {
-        if (await FlowValidationHelper.TryConfirmation(bot, appt, chatId, ct))
+        if (await FlowValidationHelper.TryConfirmation(bot, appt, chatId, ct, _quickEditService))
             return;
         
         await MessageSender.SendWithRetry(chatId,

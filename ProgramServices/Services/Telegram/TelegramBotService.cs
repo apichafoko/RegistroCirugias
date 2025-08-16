@@ -3,6 +3,7 @@ using Microsoft.Extensions.Logging;
 using RegistroCx.ProgramServices.Services.Telegram;
 using RegistroCx.Services.Onboarding;
 using RegistroCx.Services;
+using RegistroCx.Services.UI;
 using Telegram.Bot;
 using Telegram.Bot.Exceptions;
 using Telegram.Bot.Polling;
@@ -97,6 +98,15 @@ public class TelegramBotService : BackgroundService
 
                     await HandleMessageAsync(botClient, message, cancellationToken);
                 }
+                // Handle contact messages (phone sharing)
+                else if (message.Contact != null)
+                {
+                    _logger.LogInformation("Contacto compartido de {Username}: {Phone}",
+                        message.From?.Username ?? "Usuario desconocido",
+                        message.Contact.PhoneNumber);
+
+                    await HandleMessageAsync(botClient, message, cancellationToken);
+                }
                 // Handle voice messages
                 else if (message.Voice != null)
                 {
@@ -116,6 +126,15 @@ public class TelegramBotService : BackgroundService
                     await HandleAudioMessageAsync(botClient, message, cancellationToken);
                 }
             }
+            else if (update.CallbackQuery is { } callbackQuery)
+            {
+                // Handle callback query from inline keyboards
+                _logger.LogInformation("Callback query recibido de {Username}: {Data}",
+                    callbackQuery.From?.Username ?? "Usuario desconocido",
+                    callbackQuery.Data);
+
+                await HandleCallbackQueryAsync(botClient, callbackQuery, cancellationToken);
+            }
         }
         catch (Exception ex)
         {
@@ -130,7 +149,7 @@ public class TelegramBotService : BackgroundService
         var cirugiaFlowService = scope.ServiceProvider.GetRequiredService<CirugiaFlowService>();
 
         var chatId = message.Chat.Id;
-        var text = message.Text!;
+        var text = message.Text ?? ""; // Handle contact messages where text is null
 
         // Extraer teléfono del contacto si existe
         var phoneFromContact = message.Contact?.PhoneNumber;
@@ -154,8 +173,11 @@ public class TelegramBotService : BackgroundService
             return;
         }
 
-        // Usuario válido, procesar con CirugiaFlowService
-        await cirugiaFlowService.HandleAsync(botClient, chatId, text, cancellationToken);
+        // Usuario válido, procesar con CirugiaFlowService (solo si hay texto)
+        if (!string.IsNullOrWhiteSpace(text))
+        {
+            await cirugiaFlowService.HandleAsync(botClient, chatId, text, cancellationToken);
+        }
     }
 
     private async Task HandleVoiceMessageAsync(ITelegramBotClient botClient, Message message, CancellationToken cancellationToken)
@@ -266,6 +288,61 @@ public class TelegramBotService : BackgroundService
 
         // Usuario válido, procesar con CirugiaFlowService
         await cirugiaFlowService.HandleAsync(botClient, chatId, transcribedText, cancellationToken);
+    }
+
+    private async Task HandleCallbackQueryAsync(ITelegramBotClient botClient, CallbackQuery callbackQuery, CancellationToken cancellationToken)
+    {
+        try
+        {
+            using var scope = _serviceProvider.CreateScope();
+            var quickEditService = scope.ServiceProvider.GetService<IQuickEditService>();
+            
+            if (quickEditService != null && callbackQuery.Data != null && callbackQuery.Message != null)
+            {
+                var chatId = callbackQuery.Message.Chat.Id;
+                var messageId = callbackQuery.Message.MessageId;
+                
+                // Handle the callback query
+                var handled = await quickEditService.HandleCallbackQueryAsync(
+                    botClient, 
+                    chatId, 
+                    callbackQuery.Data, 
+                    messageId, 
+                    cancellationToken);
+                
+                if (handled)
+                {
+                    // Answer the callback query to remove the loading state
+                    await botClient.AnswerCallbackQuery(callbackQuery.Id, cancellationToken: cancellationToken);
+                    return;
+                }
+            }
+            
+            // If not handled by QuickEditService, answer the callback query anyway
+            await botClient.AnswerCallbackQuery(
+                callbackQuery.Id, 
+                "Acción no reconocida", 
+                showAlert: true, 
+                cancellationToken: cancellationToken);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error handling callback query: {Data}", callbackQuery.Data);
+            
+            // Answer the callback query to prevent hanging
+            try
+            {
+                await botClient.AnswerCallbackQuery(
+                    callbackQuery.Id, 
+                    "Error procesando la acción", 
+                    showAlert: true, 
+                    cancellationToken: cancellationToken);
+            }
+            catch (Exception answerEx)
+            {
+                _logger.LogError(answerEx, "Error answering callback query");
+            }
+        }
     }
 
     private async Task HandlePollingErrorAsync(ITelegramBotClient botClient, Exception exception, CancellationToken cancellationToken)

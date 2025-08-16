@@ -14,23 +14,42 @@ public class MultiSurgeryParser
     private readonly ILogger<MultiSurgeryParser> _logger;
     private readonly LLMOpenAIAssistant _llm;
 
-    public MultiSurgeryParser(ILogger<MultiSurgeryParser> logger, LLMOpenAIAssistant llm)
+    private readonly UserLearningService? _learningService;
+
+    public MultiSurgeryParser(ILogger<MultiSurgeryParser> logger, LLMOpenAIAssistant llm, UserLearningService? learningService = null)
     {
         _logger = logger;
         _llm = llm;
+        _learningService = learningService;
     }
 
     /// <summary>
     /// Detecta si el input contiene múltiples cirugías usando LLM y las separa en inputs individuales
     /// </summary>
-    public async Task<ParseResult> ParseInputAsync(string originalInput)
+    public async Task<ParseResult> ParseInputAsync(string originalInput, DateTime referenceDate, object? listasObj = null, long chatId = 0)
     {
         try
         {
             _logger.LogInformation("[MULTI-PARSER-LLM] Analyzing input: {Input}", originalInput);
 
-            var detectionResult = await DetectMultipleSurgeriesWithLLM(originalInput);
+            var detectionResult = await DetectMultipleSurgeriesWithLLM(originalInput, referenceDate, listasObj, chatId);
             
+            // Si hay problemas de validación que requieren clarificación, retornar inmediatamente
+            if (detectionResult.NeedsClarification || detectionResult.ValidationStatus == "error")
+            {
+                _logger.LogInformation("[MULTI-PARSER-LLM] Validation issues found, needs clarification");
+                return new ParseResult
+                {
+                    IsMultiple = false,
+                    OriginalInput = originalInput,
+                    IndividualInputs = new List<string> { originalInput },
+                    ValidationStatus = detectionResult.ValidationStatus,
+                    Issues = detectionResult.Issues,
+                    SuggestedResponse = detectionResult.SuggestedResponse,
+                    NeedsClarification = detectionResult.NeedsClarification
+                };
+            }
+
             if (!detectionResult.IsMultiple || detectionResult.Surgeries.Count <= 1)
             {
                 _logger.LogInformation("[MULTI-PARSER-LLM] Single surgery detected, no parsing needed");
@@ -38,7 +57,11 @@ public class MultiSurgeryParser
                 {
                     IsMultiple = false,
                     OriginalInput = originalInput,
-                    IndividualInputs = new List<string> { originalInput }
+                    IndividualInputs = new List<string> { originalInput },
+                    ValidationStatus = detectionResult.ValidationStatus,
+                    Issues = detectionResult.Issues,
+                    SuggestedResponse = detectionResult.SuggestedResponse,
+                    NeedsClarification = detectionResult.NeedsClarification
                 };
             }
 
@@ -52,7 +75,11 @@ public class MultiSurgeryParser
                 IsMultiple = true,
                 OriginalInput = originalInput,
                 IndividualInputs = individualInputs,
-                DetectedSurgeries = detectionResult.Surgeries
+                DetectedSurgeries = detectionResult.Surgeries,
+                ValidationStatus = detectionResult.ValidationStatus,
+                Issues = detectionResult.Issues,
+                SuggestedResponse = detectionResult.SuggestedResponse,
+                NeedsClarification = detectionResult.NeedsClarification
             };
         }
         catch (Exception ex)
@@ -87,14 +114,31 @@ public class MultiSurgeryParser
         }
     }
 
-    private async Task<LLMDetectionResult> DetectMultipleSurgeriesWithLLM(string input)
+    private async Task<LLMDetectionResult> DetectMultipleSurgeriesWithLLM(string input, DateTime referenceDate, object? listasObj, long chatId)
     {
-        var prompt = BuildSurgeryDetectionPrompt(input);
+        _logger.LogDebug("[MULTI-PARSER-LLM] Sending prompt to LLM with validation context");
         
-        _logger.LogDebug("[MULTI-PARSER-LLM] Sending prompt to LLM");
+        // Construir input con contexto personalizado si está disponible
+        var enhancedInput = input;
+        if (_learningService != null && chatId != 0)
+        {
+            try
+            {
+                var personalizedContext = await _learningService.BuildPersonalizedPromptContext(chatId);
+                if (!string.IsNullOrEmpty(personalizedContext))
+                {
+                    enhancedInput = $"{personalizedContext}\n\n{input}";
+                    _logger.LogDebug("[MULTI-PARSER-LLM] Enhanced input with personalized context for user {ChatId}", chatId);
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "[MULTI-PARSER-LLM] Failed to build personalized context for user {ChatId}, using original input", chatId);
+            }
+        }
         
-        // Usar el prompt específico para detección de múltiples cirugías
-        var extractedData = await _llm.ExtractMultipleSurgeriesAsync(input);
+        // Usar el prompt específico para detección de múltiples cirugías con validaciones
+        var extractedData = await _llm.ExtractMultipleSurgeriesAsync(enhancedInput, referenceDate, listasObj);
         
         // Convertir el Dictionary a nuestro formato esperado
         var llmResponse = ConvertDictionaryToJson(extractedData);
@@ -104,31 +148,6 @@ public class MultiSurgeryParser
         return ParseLLMResponse(llmResponse);
     }
     
-    private string BuildSurgeryDetectionPrompt(string input)
-    {
-        return $@"Analiza este mensaje médico y determina si menciona múltiples cirugías diferentes.
-
-MENSAJE: ""{input}""
-
-Responde SOLO con un JSON válido con este formato exacto:
-{{
-  ""multiple"": true/false,
-  ""surgeries"": [
-    {{""quantity"": número, ""name"": ""nombre_cirugía""}},
-    {{""quantity"": número, ""name"": ""nombre_cirugía""}}
-  ]
-}}
-
-REGLAS:
-- Si hay una sola cirugía: multiple = false, surgeries = [{{""quantity"": X, ""name"": ""NOMBRE""}}]
-- Si hay múltiples cirugías diferentes: multiple = true, surgeries = [lista completa]
-- Normaliza nombres: ""cers"" → ""CERS"", ""hava"" → ""HAVA"", ""adenoides"" → ""ADENOIDES"", etc.
-- Si no se especifica cantidad, asume 1
-
-EJEMPLOS:
-""2 cers y 1 hava"" → {{""multiple"": true, ""surgeries"": [{{""quantity"": 2, ""name"": ""CERS""}}, {{""quantity"": 1, ""name"": ""HAVA""}}]}}
-""3 adenoides"" → {{""multiple"": false, ""surgeries"": [{{""quantity"": 3, ""name"": ""ADENOIDES""}}]}}";
-    }
     
     private LLMDetectionResult ParseLLMResponse(string llmResponse)
     {
@@ -158,13 +177,43 @@ EJEMPLOS:
                     });
                 }
             }
+
+            // Parsear nuevas propiedades de validación
+            var validationStatus = root.TryGetProperty("validation_status", out var statusProp) 
+                ? statusProp.GetString() ?? "valid" 
+                : "valid";
             
-            _logger.LogInformation("[MULTI-PARSER-LLM] Parsed {Count} surgeries from LLM response", surgeries.Count);
+            var issues = new List<ValidationIssue>();
+            if (root.TryGetProperty("issues", out var issuesArray))
+            {
+                foreach (var issueElement in issuesArray.EnumerateArray())
+                {
+                    var type = issueElement.GetProperty("type").GetString() ?? "";
+                    var message = issueElement.GetProperty("message").GetString() ?? "";
+                    
+                    issues.Add(new ValidationIssue { Type = type, Message = message });
+                }
+            }
+
+            var suggestedResponse = root.TryGetProperty("suggested_response", out var responseProp)
+                ? responseProp.GetString()
+                : null;
+
+            var needsClarification = root.TryGetProperty("needs_clarification", out var clarificationProp)
+                ? clarificationProp.GetBoolean()
+                : false;
+            
+            _logger.LogInformation("[MULTI-PARSER-LLM] Parsed {Count} surgeries, status: {Status}, issues: {IssueCount}", 
+                surgeries.Count, validationStatus, issues.Count);
             
             return new LLMDetectionResult
             {
                 IsMultiple = isMultiple,
-                Surgeries = surgeries
+                Surgeries = surgeries,
+                ValidationStatus = validationStatus,
+                Issues = issues,
+                SuggestedResponse = suggestedResponse,
+                NeedsClarification = needsClarification
             };
         }
         catch (Exception ex)
@@ -347,6 +396,10 @@ EJEMPLOS:
         public string OriginalInput { get; set; } = string.Empty;
         public List<string> IndividualInputs { get; set; } = new();
         public List<SurgeryInfo> DetectedSurgeries { get; set; } = new();
+        public string ValidationStatus { get; set; } = "valid"; // valid|warning|error|question
+        public List<ValidationIssue> Issues { get; set; } = new();
+        public string? SuggestedResponse { get; set; }
+        public bool NeedsClarification { get; set; }
     }
 
     public class SurgeryInfo
@@ -360,5 +413,15 @@ EJEMPLOS:
     {
         public bool IsMultiple { get; set; }
         public List<SurgeryInfo> Surgeries { get; set; } = new();
+        public string ValidationStatus { get; set; } = "valid";
+        public List<ValidationIssue> Issues { get; set; } = new();
+        public string? SuggestedResponse { get; set; }
+        public bool NeedsClarification { get; set; }
+    }
+
+    public class ValidationIssue
+    {
+        public string Type { get; set; } = string.Empty; // past_date, unknown_surgeon, invalid_time, etc.
+        public string Message { get; set; } = string.Empty;
     }
 }

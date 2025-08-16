@@ -27,14 +27,13 @@ public class ChartGeneratorService
         using var titlePaint = new SKPaint
         {
             Color = SKColors.Black,
-            TextSize = 16,
-            IsAntialias = true,
-            Typeface = SKTypeface.FromFamilyName("Arial", SKFontStyle.Bold)
+            IsAntialias = true
         };
         
+        using var titleFont = new SKFont(SKTypeface.FromFamilyName("Arial", SKFontStyle.Bold), 16);
         var titleBounds = new SKRect();
-        titlePaint.MeasureText("Cirugías por Tipo", ref titleBounds);
-        canvas.DrawText("Cirugías por Tipo", (width - titleBounds.Width) / 2, 25, titlePaint);
+        titleFont.MeasureText("Cirugías por Tipo", out titleBounds);
+        canvas.DrawText("Cirugías por Tipo", (width - titleBounds.Width) / 2, 25, SKTextAlign.Left, titleFont, titlePaint);
         
         // Configurar área del gráfico de torta
         var chartSize = Math.Min(width - 160, height - 80); // Dejar espacio para leyenda
@@ -56,9 +55,10 @@ public class ChartGeneratorService
         using var textPaint = new SKPaint
         {
             Color = SKColors.Black,
-            TextSize = 12,
             IsAntialias = true
         };
+        
+        using var textFont = new SKFont(SKTypeface.Default, 12);
         
         // Dibujar secciones de la torta
         float currentAngle = -90; // Empezar arriba
@@ -86,7 +86,7 @@ public class ChartGeneratorService
             
             var legendText = $"{surgery.Key}: {surgery.Value} ({percentage:F1}%)";
             if (legendText.Length > 30) legendText = legendText.Substring(0, 27) + "...";
-            canvas.DrawText(legendText, centerX + radius + 45, legendY + 4, textPaint);
+            canvas.DrawText(legendText, centerX + radius + 45, legendY + 4, SKTextAlign.Left, textFont, textPaint);
             
             currentAngle += sweepAngle;
         }
@@ -115,14 +115,13 @@ public class ChartGeneratorService
         using var titlePaint = new SKPaint
         {
             Color = SKColors.Black,
-            TextSize = 16,
-            IsAntialias = true,
-            Typeface = SKTypeface.FromFamilyName("Arial", SKFontStyle.Bold)
+            IsAntialias = true
         };
         
+        using var titleFont = new SKFont(SKTypeface.FromFamilyName("Arial", SKFontStyle.Bold), 16);
         var titleBounds = new SKRect();
-        titlePaint.MeasureText("Top Cirujanos por Volumen", ref titleBounds);
-        canvas.DrawText("Top Cirujanos por Volumen", (width - titleBounds.Width) / 2, 25, titlePaint);
+        titleFont.MeasureText("Top Cirujanos por Volumen", out titleBounds);
+        canvas.DrawText("Top Cirujanos por Volumen", (width - titleBounds.Width) / 2, 25, SKTextAlign.Left, titleFont, titlePaint);
         
         // Configurar área del gráfico de torta
         var chartSize = Math.Min(width - 160, height - 80); // Dejar espacio para leyenda
@@ -144,9 +143,10 @@ public class ChartGeneratorService
         using var textPaint = new SKPaint
         {
             Color = SKColors.Black,
-            TextSize = 11,
             IsAntialias = true
         };
+        
+        using var textFont = new SKFont(SKTypeface.Default, 11);
         
         // Dibujar secciones de la torta
         float currentAngle = -90; // Empezar arriba
@@ -174,7 +174,7 @@ public class ChartGeneratorService
             
             var surgeonName = surgeon.SurgeonName.Length > 12 ? surgeon.SurgeonName.Substring(0, 12) + "..." : surgeon.SurgeonName;
             var legendText = $"{surgeonName}: {surgeon.TotalSurgeries} ({percentage:F1}%)";
-            canvas.DrawText(legendText, centerX + radius + 40, legendY + 3, textPaint);
+            canvas.DrawText(legendText, centerX + radius + 40, legendY + 3, SKTextAlign.Left, textFont, textPaint);
             
             currentAngle += sweepAngle;
         }
@@ -205,14 +205,13 @@ public class ChartGeneratorService
         using var titlePaint = new SKPaint
         {
             Color = SKColors.Black,
-            TextSize = 16,
-            IsAntialias = true,
-            Typeface = SKTypeface.FromFamilyName("Arial", SKFontStyle.Bold)
+            IsAntialias = true
         };
         
+        using var titleFont = new SKFont(SKTypeface.FromFamilyName("Arial", SKFontStyle.Bold), 16);
         var titleBounds = new SKRect();
-        titlePaint.MeasureText("Tendencia Temporal - Cirugías por Día", ref titleBounds);
-        canvas.DrawText("Tendencia Temporal - Cirugías por Día", (width - titleBounds.Width) / 2, 30, titlePaint);
+        titleFont.MeasureText("Tendencia Temporal - Cirugías por Día", out titleBounds);
+        canvas.DrawText("Tendencia Temporal - Cirugías por Día", (width - titleBounds.Width) / 2, 30, SKTextAlign.Left, titleFont, titlePaint);
         
         // Dibujar grilla de fondo
         using var gridPaint = new SKPaint
@@ -256,16 +255,18 @@ public class ChartGeneratorService
         using var textPaint = new SKPaint
         {
             Color = SKColors.Black,
-            TextSize = 10,
             IsAntialias = true
         };
+        
+        using var textFont = new SKFont(SKTypeface.Default, 10);
         
         using var datePaint = new SKPaint
         {
             Color = SKColors.DarkGray,
-            TextSize = 9,
             IsAntialias = true
         };
+        
+        using var dateFont = new SKFont(SKTypeface.Default, 9);
         
         var path = new SKPath();
         bool first = true;
@@ -293,7 +294,7 @@ public class ChartGeneratorService
             // Dibujar valor encima del punto
             if (point.Value > 0)
             {
-                canvas.DrawText(point.Value.ToString(), x - 5, y - 12, textPaint);
+                canvas.DrawText(point.Value.ToString(), x - 5, y - 12, SKTextAlign.Left, textFont, textPaint);
             }
             
             // Dibujar fecha debajo - mostrar más fechas para reportes mensuales
@@ -303,7 +304,7 @@ public class ChartGeneratorService
                 canvas.Save();
                 canvas.Translate(x, chartArea.Bottom + 15);
                 canvas.RotateDegrees(-45); // Rotar texto para mejor legibilidad
-                canvas.DrawText(point.Key.ToString("dd/MM"), 0, 0, datePaint);
+                canvas.DrawText(point.Key.ToString("dd/MM"), 0, 0, SKTextAlign.Left, dateFont, datePaint);
                 canvas.Restore();
             }
         }
@@ -315,15 +316,16 @@ public class ChartGeneratorService
         using var yAxisPaint = new SKPaint
         {
             Color = SKColors.Gray,
-            TextSize = 9,
             IsAntialias = true
         };
+        
+        using var yAxisFont = new SKFont(SKTypeface.Default, 9);
         
         for (int i = 0; i <= 5; i++)
         {
             var value = (maxValue / 5f) * i;
             var y = chartArea.Bottom - (i / 5f) * (chartArea.Height - 20);
-            canvas.DrawText(((int)value).ToString(), 10, y + 3, yAxisPaint);
+            canvas.DrawText(((int)value).ToString(), 10, y + 3, SKTextAlign.Left, yAxisFont, yAxisPaint);
         }
         
         using var image = surface.Snapshot();
@@ -342,12 +344,12 @@ public class ChartGeneratorService
         using var textPaint = new SKPaint
         {
             Color = SKColors.Gray,
-            TextSize = 14,
-            IsAntialias = true,
-            TextAlign = SKTextAlign.Center
+            IsAntialias = true
         };
         
-        canvas.DrawText("Sin datos disponibles", width / 2, height / 2, textPaint);
+        using var textFont = new SKFont(SKTypeface.Default, 14);
+        
+        canvas.DrawText("Sin datos disponibles", width / 2, height / 2, SKTextAlign.Center, textFont, textPaint);
         
         using var image = surface.Snapshot();
         using var data = image.Encode(SKEncodedImageFormat.Png, 100);

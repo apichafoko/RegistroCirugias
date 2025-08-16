@@ -15,9 +15,14 @@ public interface IUsuarioTelegramRepository
     Task<UsuarioTelegram?> GetByChatIdAsync(long chatId, CancellationToken ct = default);
 
     /// <summary>
+    /// Obtiene los datos de Telegram de un usuario por telegram_id
+    /// </summary>
+    Task<UsuarioTelegram?> GetByTelegramIdAsync(long telegramId, CancellationToken ct = default);
+
+    /// <summary>
     /// Obtiene o crea los datos de Telegram de un usuario
     /// </summary>
-    Task<UsuarioTelegram> GetOrCreateAsync(long chatId, long telegramId, CancellationToken ct = default);
+    Task<UsuarioTelegram> GetOrCreateAsync(long chatId, long? telegramId, CancellationToken ct = default);
 
     /// <summary>
     /// Actualiza los datos de Telegram del usuario
@@ -29,10 +34,21 @@ public interface IUsuarioTelegramRepository
     /// </summary>
     Task UpdateTelegramDataAsync(
         long chatId,
-        long telegramId,
+        long? telegramId,
         string? nombre,
         string? username,
         string? telefono = null,
         string? email = null,
+        CancellationToken ct = default);
+
+    /// <summary>
+    /// Actualiza los datos de Telegram buscando primero por teléfono, luego por chat_id
+    /// </summary>
+    Task UpdateTelegramDataByPhoneAsync(
+        long chatId,
+        long? telegramId,
+        string? nombre,
+        string? username,
+        string telefono,
         CancellationToken ct = default);
 }

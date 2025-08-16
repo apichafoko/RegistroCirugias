@@ -28,7 +28,6 @@ public class AnesthesiologistRepository : IAnesthesiologistRepository
             csb.Username = userInfo[0];
             csb.Password = userInfo.Length > 1 ? userInfo[1] : "";
             csb.Database = uri.AbsolutePath.TrimStart('/');
-            csb.TrustServerCertificate = true;
 
             // leer parámetros de query
             var qp = System.Web.HttpUtility.ParseQueryString(uri.Query);

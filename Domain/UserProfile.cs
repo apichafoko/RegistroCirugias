@@ -4,7 +4,8 @@ namespace RegistroCx.Domain;
 
 public class UserProfile
 {
-    public long ChatId { get; set; }
+    public int Id { get; set; }
+    public long? ChatId { get; set; }
     public string? Phone { get; set; }
     public string? GoogleEmail { get; set; }
     public UserState State { get; set; }

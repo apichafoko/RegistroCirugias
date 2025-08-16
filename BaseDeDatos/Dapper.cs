@@ -30,7 +30,8 @@ public class UserProfileRepository : IUserProfileRepository
 
     public async Task<UserProfile?> GetAsync(long chatId, CancellationToken ct = default)
     {
-        const string sql = @"SELECT chat_id      AS ChatId,
+        const string sql = @"SELECT id           AS Id,
+                                chat_id      AS ChatId,
                                 state        AS State,
                                 phone        AS Phone,
                                 google_email AS GoogleEmail,

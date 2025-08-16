@@ -23,13 +23,15 @@ public static class CirugiaUserMessageBuilder
     /// <param name="inputCirugiaRaw">Texto crudo recibido (agenda / mensaje).</param>
     /// <param name="metadatosExtra">Diccionario opcional con metadatos (canal, origen, etc.).</param>
     /// <param name="incluirEjemploSeccionMetadatos">Si true y hay metadatos, incluye bloque METADATOS delimitado.</param>
+    /// <param name="contextPersonalizado">Contexto personalizado de aprendizaje del usuario (opcional).</param>
     /// <returns>String a usar como contenido del mensaje user.</returns>
     public static string Build(
         DateTime fechaHoy,
         object? listasObj,
         string inputCirugiaRaw,
         IDictionary<string, string>? metadatosExtra = null,
-        bool incluirEjemploSeccionMetadatos = true)
+        bool incluirEjemploSeccionMetadatos = true,
+        string? contextPersonalizado = null)
     {
         var fechaHoyStr = fechaHoy.ToString("dd/MM/yyyy");
 
@@ -48,6 +50,15 @@ public static class CirugiaUserMessageBuilder
         sb.AppendLine("LISTAS_JSON=");
         sb.AppendLine(listasJson);
         sb.AppendLine();
+
+        // Contexto personalizado del sistema de aprendizaje
+        if (!string.IsNullOrWhiteSpace(contextPersonalizado))
+        {
+            sb.AppendLine("=== CONTEXTO_PERSONALIZADO_INICIO ===");
+            sb.AppendLine(contextPersonalizado);
+            sb.AppendLine("=== CONTEXTO_PERSONALIZADO_FIN ===");
+            sb.AppendLine();
+        }
 
         if (metadatosExtra != null && metadatosExtra.Count > 0 && incluirEjemploSeccionMetadatos)
         {

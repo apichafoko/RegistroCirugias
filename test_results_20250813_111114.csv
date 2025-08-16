@@ -1,0 +1,7 @@
+test_id,name,input,expected,actual,status,timestamp
+TC-001-01,Caso básico completo,2 CERS mañana 14hs Hospital Italiano Dr. García,confirmás estos datos,TIMEOUT - No response received,TIMEOUT,2025-08-13T11:07:42.856134
+TC-001-02,Apendicectomía con fecha absoluta,Apendicectomía 15/08/2025 16:30 Sanatorio Anchorena Dr. López,confirmás estos datos,TIMEOUT - No response received,TIMEOUT,2025-08-13T11:08:19.768740
+TC-001-03,Fecha relativa - hoy,3 adenoides hoy 10hs Clínica Santa Isabel Dr. Martínez,confirmás estos datos,TIMEOUT - No response received,TIMEOUT,2025-08-13T11:08:56.234519
+TC-002-01,Errores tipográficos múltiples,2 SERC mañana 14sh Hospital Itlaiano Dr. Garsia,CERS,TIMEOUT - No response received,TIMEOUT,2025-08-13T11:09:34.477298
+TC-002-02,Apendicectomía mal escrita,Apendisectomia 15/08 Sandatorio Ancorena,Apendicectomía,TIMEOUT - No response received,TIMEOUT,2025-08-13T11:10:12.327340
+TC-003-01,Información incompleta - solo cantidad,2 cirugías mañana,tipo de cirugía,TIMEOUT - No response received,TIMEOUT,2025-08-13T11:10:51.304183

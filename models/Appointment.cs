@@ -1,10 +1,11 @@
 using System;
+using RegistroCx.models;
 namespace RegistroCx.Models;
 
 public class Appointment
 {
     public long Id { get; set; }
-    public long ChatId { get; set; }
+    public long? ChatId { get; set; }
     public string? GoogleEmail { get; set; } // Para reportes compartidos por equipo
     public DateTime? Fecha { get; set; }
     public string? Lugar { get; set; }
@@ -48,6 +49,12 @@ public class Appointment
 
     // Campo para almacenar candidatos de anestesiólogo durante búsqueda
     public List<string> AnesthesiologistCandidates { get; set; } = new();
+    
+    // Campo para manejar warnings de validación que permiten continuar
+    public string? ValidationWarning { get; set; }
+    
+    // Campo para contexto de modificación
+    public ModificationContext? ModificationContext { get; set; }
 
     // Propiedad para compatibilidad
     public DateTime? FechaHora 
@@ -119,4 +126,11 @@ public class Appointment
         
         return DateTime.Now;
     }
+}
+
+public class ModificationContext
+{
+    public Appointment? OriginalAppointment { get; set; }
+    public ModificationRequest? RequestedChanges { get; set; }
+    public bool IsAwaitingConfirmation { get; set; }
 }

@@ -62,7 +62,7 @@ public static class OAuthEndpoints
                         if (syncedCount > 0)
                         {
                             await MessageSender.SendWithRetry(chatId, 
-                                "🎉 ¡Autorización completada y appointments sincronizados exitosamente!");
+                                "🎉 ¡Autorización completada y cirugías sincronizadas exitosamente!");
                         }
                         else
                         {
@@ -74,7 +74,7 @@ public static class OAuthEndpoints
                     {
                         logger.LogError(syncEx, "Error durante sincronización post-OAuth");
                         await MessageSender.SendWithRetry(chatId, 
-                            "✅ Autorización completada, pero hubo un problema con la sincronización. Escribe /autorizar si necesitas sincronizar appointments pendientes.");
+                            "✅ Autorización completada, pero hubo un problema con la sincronización. Escribe /autorizar si necesitas sincronizar cirugías pendientes.");
                     }
                 });
                 

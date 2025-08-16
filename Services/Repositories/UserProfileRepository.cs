@@ -29,7 +29,6 @@ public class UserProfileRepository : IUserProfileRepository
             csb.Username = userInfo[0];
             csb.Password = userInfo.Length > 1 ? userInfo[1] : "";
             csb.Database = uri.AbsolutePath.TrimStart('/');
-            csb.TrustServerCertificate = true;
 
             // leer parámetros de query
             var qp = System.Web.HttpUtility.ParseQueryString(uri.Query);
@@ -53,7 +52,8 @@ public class UserProfileRepository : IUserProfileRepository
 
     public async Task<UserProfile?> GetAsync(long chatId, CancellationToken ct = default)
     {
-        const string sql = @"SELECT chat_id      AS ChatId,
+        const string sql = @"SELECT id           AS Id,
+                                chat_id      AS ChatId,
                                 state        AS State,
                                 phone        AS Phone,
                                 google_email AS GoogleEmail,
@@ -150,7 +150,8 @@ public class UserProfileRepository : IUserProfileRepository
 
     public async Task<UserProfile?> FindByPhoneAsync(string phone, CancellationToken ct = default)
     {
-        const string sql = @"SELECT chat_id      AS ChatId,
+        const string sql = @"SELECT id           AS Id,
+                                chat_id      AS ChatId,
                                 state        AS State,
                                 phone        AS Phone,
                                 google_email AS GoogleEmail,
@@ -168,7 +169,8 @@ public class UserProfileRepository : IUserProfileRepository
 
     public async Task<UserProfile?> FindByEmailAsync(string email, CancellationToken ct = default)
     {
-        const string sql = @"SELECT chat_id      AS ChatId,
+        const string sql = @"SELECT id           AS Id,
+                                chat_id      AS ChatId,
                                 state        AS State,
                                 phone        AS Phone,
                                 google_email AS GoogleEmail,
@@ -189,9 +191,19 @@ public class UserProfileRepository : IUserProfileRepository
         const string sql = @"UPDATE user_profiles 
                             SET chat_id = @newChatId, 
                                 updated_at = now()
-                            WHERE chat_id = @originalChatId";
+                            WHERE chat_id = @originalChatId OR (chat_id IS NULL AND @originalChatId = 0)";
         await using var conn = await OpenAsync(ct);
         await conn.ExecuteAsync(new CommandDefinition(sql, new { originalChatId, newChatId }, cancellationToken: ct));
+    }
+
+    public async Task LinkChatIdByIdAsync(int profileId, long newChatId, CancellationToken ct = default)
+    {
+        const string sql = @"UPDATE user_profiles 
+                            SET chat_id = @newChatId, 
+                                updated_at = now()
+                            WHERE id = @profileId";
+        await using var conn = await OpenAsync(ct);
+        await conn.ExecuteAsync(new CommandDefinition(sql, new { profileId, newChatId }, cancellationToken: ct));
     }
 
     public async Task<UserProfile> CreateProfileCopyingEmailTokensAsync(UserProfile sourceProfile, long newChatId, CancellationToken ct = default)

@@ -2,6 +2,7 @@ using System;
 using System.Threading;
 using System.Threading.Tasks;
 using RegistroCx.Models;
+using RegistroCx.models;
 
 namespace RegistroCx.Services.Repositories;
 
@@ -20,4 +21,8 @@ public interface IAppointmentRepository
     Task<List<Appointment>> GetAppointmentsForWeekAsync(string googleEmail, DateTime weekStartDate, CancellationToken ct);
     Task<List<Appointment>> GetAppointmentsForMonthAsync(string googleEmail, int month, int year, CancellationToken ct);
     Task<List<Appointment>> GetAppointmentsForYearAsync(string googleEmail, int year, CancellationToken ct);
+    
+    // Métodos para búsqueda de appointments por usuario
+    Task<List<Appointment>> GetByUserAndDateRangeAsync(long chatId, DateTime startDate, DateTime endDate, CancellationToken ct = default);
+    Task UpdateAsync(long appointmentId, ModificationRequest changes, CancellationToken ct = default);
 }

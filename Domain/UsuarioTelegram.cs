@@ -9,7 +9,7 @@ namespace RegistroCx.Domain;
 public class UsuarioTelegram
 {
     public int Id { get; set; }
-    public long TelegramId { get; set; }
+    public long? TelegramId { get; set; }
     public string? Nombre { get; set; }
     public string? Username { get; set; }
     public string? Telefono { get; set; }

@@ -5,6 +5,8 @@ using RegistroCx.Helpers;
 using RegistroCx.ProgramServices.Services.Telegram;
 using RegistroCx.Services;
 using RegistroCx.Services.Repositories;
+using RegistroCx.Services.Analytics;
+using RegistroCx.Services.UI;
 using System.Linq;
 
 namespace RegistroCx.Services.Flow;
@@ -16,15 +18,19 @@ public class FlowWizardHandler
     
     private readonly IAnesthesiologistSearchService? _anesthesiologistSearchService;
     private readonly IUserProfileRepository? _userRepository;
+    private readonly IParsingAnalyticsService? _analytics;
+    private readonly IQuickEditService? _quickEditService;
     
     // Constructor sin parámetros para compatibilidad
     public FlowWizardHandler() { }
     
     // Constructor con dependencias para nueva funcionalidad
-    public FlowWizardHandler(IAnesthesiologistSearchService anesthesiologistSearchService, IUserProfileRepository userRepository)
+    public FlowWizardHandler(IAnesthesiologistSearchService anesthesiologistSearchService, IUserProfileRepository userRepository, IParsingAnalyticsService? analytics = null, IQuickEditService? quickEditService = null)
     {
         _anesthesiologistSearchService = anesthesiologistSearchService;
         _userRepository = userRepository;
+        _analytics = analytics;
+        _quickEditService = quickEditService;
     }
 
     public async Task<bool> HandleFieldWizard(ITelegramBotClient bot, Appointment appt, string rawText, long chatId, CancellationToken ct)
@@ -83,6 +89,18 @@ public class FlowWizardHandler
         // Intentar aplicar el valor
         if (!CamposExistentes.TryAplicarValorCampo(appt, appt.CampoQueFalta, rawText, out var error))
         {
+            // Log failed field parsing
+            if (_analytics != null)
+            {
+                var fieldName = appt.CampoQueFalta.ToString().ToLowerInvariant();
+                await _analytics.TrackMissingFieldAsync(fieldName, rawText);
+                
+                if (appt.IntentosCampoActual == 0) // First attempt
+                {
+                    await _analytics.LogParsingErrorAsync($"invalid_field_{fieldName}", rawText, error);
+                }
+            }
+            
             appt.IntentosCampoActual++;
             if (appt.IntentosCampoActual >= Appointment.MaxIntentosCampo)
             {
@@ -97,6 +115,13 @@ public class FlowWizardHandler
                 $"{error} (Intento {appt.IntentosCampoActual}/{Appointment.MaxIntentosCampo}). Reintentá:",
                 ct);
             return true;
+        }
+        
+        // Log successful field extraction
+        if (_analytics != null)
+        {
+            var fieldName = appt.CampoQueFalta.ToString().ToLowerInvariant();
+            await _analytics.TrackFieldExtractionAsync(fieldName, rawText, rawText);
         }
         
         // Limpiar el wizard
@@ -124,7 +149,7 @@ public class FlowWizardHandler
                 ct);
             
             // Intentar confirmar o pedir siguiente campo
-            if (await FlowValidationHelper.TryConfirmation(bot, appt, chatId, ct)) 
+            if (await FlowValidationHelper.TryConfirmation(bot, appt, chatId, ct, _quickEditService)) 
                 return true;
             
             if (await FlowValidationHelper.RequestMissingField(bot, appt, chatId, ct)) 

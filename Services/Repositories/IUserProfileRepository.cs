@@ -19,6 +19,7 @@ public interface IUserProfileRepository
     Task<UserProfile?> FindByPhoneAsync(string phone, CancellationToken ct = default);
     Task<UserProfile?> FindByEmailAsync(string email, CancellationToken ct = default);
     Task LinkChatIdAsync(long originalChatId, long newChatId, CancellationToken ct = default);
+    Task LinkChatIdByIdAsync(int profileId, long newChatId, CancellationToken ct = default);
     Task<UserProfile> CreateProfileCopyingEmailTokensAsync(UserProfile sourceProfile, long newChatId, CancellationToken ct = default);
 
 

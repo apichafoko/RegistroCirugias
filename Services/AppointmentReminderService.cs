@@ -98,33 +98,36 @@ public class AppointmentReminderService : BackgroundService
         var hoursUntil = (int)timeUntilSurgery.TotalHours;
         var minutesUntil = timeUntilSurgery.Minutes;
 
-        var reminderMessage = $"⏰ **RECORDATORIO DE CIRUGÍA**\\n\\n" +
-                             $"🏥 **{appointment.Cantidad} {appointment.Cirugia?.ToUpper()}**\\n" +
-                             $"📅 **Fecha:** {appointment.FechaHora:dddd, dd MMMM yyyy}\\n" +
-                             $"⌚ **Hora:** {appointment.FechaHora:HH:mm}\\n" +
-                             $"📍 **Lugar:** {appointment.Lugar}\\n" +
-                             $"👨‍⚕️ **Cirujano:** {appointment.Cirujano}\\n" +
-                             $"💉 **Anestesiólogo:** {appointment.Anestesiologo}\\n\\n";
+        var reminderMessage = $"⏰ RECORDATORIO DE CIRUGÍA\n\n" +
+                             $"🏥 {appointment.Cantidad} {appointment.Cirugia?.ToUpper()}\n" +
+                             $"📅 Fecha: {appointment.FechaHora:dddd, dd MMMM yyyy}\n" +
+                             $"⌚ Hora: {appointment.FechaHora:HH:mm}\n" +
+                             $"📍 Lugar: {appointment.Lugar}\n" +
+                             $"👨‍⚕️ Cirujano: {appointment.Cirujano}\n" +
+                             $"💉 Anestesiólogo: {appointment.Anestesiologo}\n\n";
 
         if (hoursUntil <= 1)
         {
-            reminderMessage += $"🚨 **¡ATENCIÓN! La cirugía es en menos de {hoursUntil + 1} hora(s).**";
+            reminderMessage += $"🚨 ¡ATENCIÓN! La cirugía es en menos de {hoursUntil + 1} hora(s).";
         }
         else
         {
-            reminderMessage += $"⏳ **Faltan aproximadamente {hoursUntil} horas para la cirugía.**";
+            reminderMessage += $"⏳ Faltan aproximadamente {hoursUntil} horas para la cirugía.";
         }
 
-        reminderMessage += "\\n\\n" +
-                          "📋 **Recordá:**\\n" +
-                          "• Llegar 30 min antes\\n" +
-                          "• Traer documentación\\n" +
-                          "• Confirmar con anestesiólogo\\n\\n" +
+        reminderMessage += "\n\n" +
+                          "📋 Recordá:\n" +
+                          "• Llegar 30 min antes\n" +
+                          "• Traer documentación\n" +
+                          "• Confirmar con anestesiólogo\n\n" +
                           "¡Éxitos en la cirugía! 💪";
 
-        await MessageSender.SendWithRetry(
-            appointment.ChatId, 
-            reminderMessage, 
-            cancellationToken: ct);
+        if (appointment.ChatId.HasValue)
+        {
+            await MessageSender.SendWithRetry(
+                appointment.ChatId.Value, 
+                reminderMessage, 
+                cancellationToken: ct);
+        }
     }
 }

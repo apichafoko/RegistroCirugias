@@ -2,12 +2,13 @@ using Telegram.Bot;
 using RegistroCx.Models;
 using RegistroCx.Helpers;
 using RegistroCx.ProgramServices.Services.Telegram;
+using RegistroCx.Services.UI;
 
 namespace RegistroCx.Services.Flow;
 
 public static class FlowValidationHelper
 {
-    public static async Task<bool> TryConfirmation(ITelegramBotClient bot, Appointment appt, long chatId, CancellationToken ct)
+    public static async Task<bool> TryConfirmation(ITelegramBotClient bot, Appointment appt, long chatId, CancellationToken ct, IQuickEditService? quickEditService = null)
     {
         // El anestesiólogo ahora es opcional
         if (appt.FechaHora == null || appt.Lugar == null || appt.Cirujano == null ||
@@ -23,7 +24,18 @@ public static class FlowValidationHelper
 
         var resumen = BuildConfirmationSummary(appt);
         appt.ConfirmacionPendiente = true;
-        await MessageSender.SendWithRetry(chatId, resumen, cancellationToken: ct);
+        
+        // Use quick edit buttons if service is available
+        if (quickEditService != null)
+        {
+            await quickEditService.SendAppointmentWithEditButtonsAsync(bot, chatId, appt, resumen, ct);
+        }
+        else
+        {
+            // Fallback to text-based confirmation
+            await MessageSender.SendWithRetry(chatId, resumen, cancellationToken: ct);
+        }
+        
         return true;
     }
 
