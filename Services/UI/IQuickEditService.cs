@@ -20,6 +20,9 @@ namespace RegistroCx.Services.UI
         Task<InlineKeyboardMarkup> GenerateSurgeonSelectionKeyboardAsync();
         Task<InlineKeyboardMarkup> GenerateLocationSelectionKeyboardAsync();
         
+        // Generate keyboard for modification selection
+        Task<InlineKeyboardMarkup> CreateModificationKeyboard(Appointment appointment);
+        
         // Handle callback queries from inline keyboards
         Task<bool> HandleCallbackQueryAsync(ITelegramBotClient bot, long chatId, string callbackData, int messageId, CancellationToken ct);
         

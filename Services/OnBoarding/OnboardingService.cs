@@ -148,7 +148,7 @@ namespace RegistroCx.Services.Onboarding
                     await MessageSender.SendWithRetry(chatId,
                         $"¡Hola {await GetTelegramDisplayName(profile.ChatId ?? chatId, ct)}! 👋\n\n" +
                         "Te reconocí por tu teléfono. ¡Qué bueno que estés acá!\n\n" +
-                        "Tu perfil ya está configurado. Podés empezar a enviarme cirugías directamente.",
+                        "¡Listo! 🎉 Ya está todo configurado.\n\nAhora podés mandarme los datos de tus cirugías y yo las agendo automáticamente en tu calendario.",
                         replyMarkup: new ReplyKeyboardRemove(),
                         cancellationToken: ct);
                 }
@@ -160,9 +160,11 @@ namespace RegistroCx.Services.Onboarding
                     await _repo.SaveAsync(profile, ct);
                     
                     await MessageSender.SendWithRetry(chatId,
-                        $"¡Hola {displayName}! 👋 ¿Cómo estás?\n\n" +
-                        $"Qué bueno verte por acá. Necesitamos que autorices el calendario de tu email <b>{profile.GoogleEmail}</b> para poder seguir adelante.\n\n" +
-                        "Escribí <b>continuar</b> para generar el enlace de autorización.",
+                        $"¡Hola {displayName}! 👋\n\n" +
+                        $"Perfecto, ya tengo tu email <b>{profile.GoogleEmail}</b>.\n\n" +
+                        "Ahora necesito que autorices tu calendario de Google para poder crear los eventos de las cirugías.\n\n" +
+                        "Escribí <b>continuar</b> y te mando el enlace para autorizar:",
+                        replyMarkup: new ReplyKeyboardRemove(),
                         cancellationToken: ct);
                 }
                 
@@ -184,11 +186,12 @@ namespace RegistroCx.Services.Onboarding
                 case UserState.NeedPhone:
                     if (!string.IsNullOrWhiteSpace(profile.Phone))
                     {
-                        // Ya lo obtuvimos (probablemente por contacto)
-                        profile.State = UserState.NeedEmail;
+                        // Ya lo obtuvimos (probablemente por contacto) - saltar email y ir a OAuth
+                        profile.State = UserState.NeedOAuth;
                         await _repo.SaveAsync(profile, ct);
                         await MessageSender.SendWithRetry(chatId,
-                            "Perfecto ✅. Ahora pasame tu email de Google (ej: nombre@gmail.com).",
+                            $"Perfecto ✅\n\nYa tengo tu email <b>{profile.GoogleEmail}</b> preconfigurado.\n\nAhora necesito que autorices tu calendario de Google para poder crear los eventos de las cirugías.\n\nEscribí <b>continuar</b> y te mando el enlace para autorizar:",
+                            replyMarkup: new ReplyKeyboardRemove(),
                             cancellationToken: ct);
                         return (true, profile);
                     }
@@ -206,17 +209,18 @@ namespace RegistroCx.Services.Onboarding
                             await MessageSender.SendWithRetry(chatId,
                                 $"¡Hola {await GetTelegramDisplayName(existingProfile.ChatId ?? chatId, ct)}! 👋\n\n" +
                                 "Te reconocí por tu teléfono. ¡Qué bueno que estés acá!\n\n" +
-                                "Tu perfil ya está configurado. Podés empezar a enviarme cirugías directamente.",
+                                "¡Listo! 🎉 Ya está todo configurado.\n\nAhora podés mandarme los datos de tus cirugías y yo las agendo automáticamente en tu calendario.",
                                 replyMarkup: new ReplyKeyboardRemove(),
                                 cancellationToken: ct);
                             return (true, existingProfile);
                         }
                         
                         profile.Phone = phoneManual;
-                        profile.State = UserState.NeedEmail;
+                        profile.State = UserState.NeedOAuth;
                         await _repo.SaveAsync(profile, ct);
                         await MessageSender.SendWithRetry(chatId,
-                            "Perfecto ✅. Ahora pasame tu email de Google (ej: nombre@gmail.com).",
+                            $"Perfecto ✅\n\nYa tengo tu email <b>{profile.GoogleEmail}</b> preconfigurado.\n\nAhora necesito que autorices tu calendario de Google para poder crear los eventos de las cirugías.\n\nEscribí <b>continuar</b> y te mando el enlace para autorizar:",
+                            replyMarkup: new ReplyKeyboardRemove(),
                             cancellationToken: ct);
                     }
                     else
@@ -225,42 +229,6 @@ namespace RegistroCx.Services.Onboarding
                     }
                     return (true, profile);
 
-                case UserState.NeedEmail:
-                    if (Regex.IsMatch(rawText, @"^[^@\s]+@[^@\s]+\.[^@\s]+$"))
-                    {
-                        var email = rawText.Trim();
-                        
-                        // EMAIL ES 1:N - Verificar si ya existe un usuario con ese email de equipo
-                        var existingProfile = await _repo.FindByEmailAsync(email, ct);
-                        if (existingProfile != null && existingProfile.ChatId != chatId)
-                        {
-                            // Email compartido: crear nuevo registro copiando tokens OAuth
-                            var newProfile = await _repo.CreateProfileCopyingEmailTokensAsync(existingProfile, chatId, ct);
-                            await UpdateTelegramData(newProfile, telegramUserId, firstName, lastName, username, languageCode, ct);
-                            
-                            await MessageSender.SendWithRetry(chatId,
-                                $"¡Hola {await GetTelegramDisplayName(newProfile.ChatId ?? chatId, ct)}! 👋\n\n" +
-                                "Te reconocí por tu email de equipo. ¡Qué bueno que estés acá!\n\n" +
-                                "Tu perfil ya está configurado con acceso al calendario compartido. Podés empezar a enviarme cirugías directamente.",
-                                replyMarkup: new ReplyKeyboardRemove(),
-                                cancellationToken: ct);
-                            return (true, newProfile);
-                        }
-                        
-                        profile.GoogleEmail = email;
-                        profile.State = UserState.NeedOAuth;
-                        await _repo.SaveAsync(profile, ct);
-                        await MessageSender.SendWithRetry(chatId,
-                            "Genial ✅. Escribí <b>continuar</b> para autorizar Calendar.",
-                            cancellationToken: ct);
-                    }
-                    else
-                    {
-                        await MessageSender.SendWithRetry(chatId,
-                            "Email inválido. Ejemplo: algo@gmail.com",
-                            cancellationToken: ct);
-                    }
-                    return (true, profile);
 
                 case UserState.NeedOAuth:
                     if (lower == "continuar")
@@ -272,7 +240,7 @@ namespace RegistroCx.Services.Onboarding
                         // Generar URL real
                         var url = _oauth.BuildAuthUrl(chatId, profile.GoogleEmail!);
                         await MessageSender.SendWithRetry(chatId,
-                            $"<a href=\"{url}\">Abri este enlace para autorizar</a>\n\nLuego escribí <b>ok</b>.",
+                            $"<a href=\"{url}\">Abri este enlace para autorizar</a>",
                             cancellationToken: ct);
                     }
                     else
@@ -318,7 +286,7 @@ namespace RegistroCx.Services.Onboarding
 📋 <b>¿CÓMO FUNCIONA?</b>
 Simplemente escribime los datos de tu cirugía en lenguaje natural. Yo entiendo y organizo automáticamente:
 
-🔹 <b>Ejemplo:</b> ""23/08 2 CERS + 1 MLD quiroga ancho uri 14hs""
+🔹 <b>Ejemplo:</b> ""23/08 2 CERS + 1 MLD Sanchez Sanatorio Anchorena Pedro 14hs""
 • Detectaré que son 3 cirugías diferentes
 • Extraeré fecha, hora, lugar, cirujano, etc.
 • Te pediré solo los datos que falten
@@ -335,9 +303,11 @@ Simplemente escribime los datos de tu cirugía en lenguaje natural. Yo entiendo 
 • **/semanal** - Resumen de esta semana
 • **/mensual** - Resumen del último mes
 
-🚀 <b>¡Empezá ahora!</b> Mandame cualquier cirugía y yo me encargo del resto.";
-            // Remover teclado cuando el usuario ya está configurado
-            await MessageSender.SendWithRetry(chatId, txt, replyMarkup: new ReplyKeyboardRemove(), cancellationToken: ct);
+🚀 <b>¿Qué querés hacer?</b> Elegí una opción:";
+
+            // Crear botonera de ayuda con opciones principales
+            var helpKeyboard = CreateHelpKeyboard();
+            await MessageSender.SendWithRetry(chatId, txt, replyMarkup: helpKeyboard, cancellationToken: ct);
             }
             else
             {
@@ -352,10 +322,9 @@ Simplemente escribime los datos de tu cirugía en lenguaje natural. Yo entiendo 
 
             var txt =
     @"¡Hola! 👋 Soy el asistente de cirugías.
-    1) Compartí tu teléfono.
-    2) Luego tu email de Google.
-    3) Autoriza Calendar
-    4) Envía la cirugía";
+
+Para empezar, necesito que compartas tu teléfono.
+Después te voy a ayudar paso a paso con todo lo demás.";
 
             await MessageSender.SendWithRetry(chatId, txt, replyMarkup: kb, cancellationToken: ct);
             }
@@ -373,7 +342,7 @@ Simplemente escribime los datos de tu cirugía en lenguaje natural. Yo entiendo 
             };
             return bot.SendMessage(
                 chatId,
-                "Necesito tu teléfono (ej: +54911…).",
+                "Necesito tu teléfono.\n\n📱 Podés usar el botón para compartirlo automáticamente o escribirlo manualmente.\n\n💡 **Formato:** +5491160167172 (con código de país)",
                 replyMarkup: kb,
                 cancellationToken: ct);
         }
@@ -476,6 +445,14 @@ Simplemente escribime los datos de tu cirugía en lenguaje natural. Yo entiendo 
                 "alluda",    // Confusión de teclas
                 "help",      // En inglés
                 "helpme",    // En inglés
+                "help me",   // Help separado
+                "no entiendo", // Usuario confundido
+                "no comprendo", // Usuario confundido
+                "que hago",    // Usuario confundido
+                "como funciona", // Usuario pregunta funcionalidad
+                "no se",       // Usuario confundido
+                "confundido",  // Estado del usuario
+                "perdido",     // Usuario perdido
             };
 
             return helpPatterns.Any(pattern => 
@@ -518,6 +495,36 @@ Simplemente escribime los datos de tu cirugía en lenguaje natural. Yo entiendo 
             }
 
             return distance[sourceLength, targetLength];
+        }
+
+        /// <summary>
+        /// Crea el teclado de ayuda con las opciones principales del sistema
+        /// </summary>
+        private InlineKeyboardMarkup CreateHelpKeyboard()
+        {
+            var buttons = new List<List<InlineKeyboardButton>>();
+
+            // Primera fila: Agendar y Modificar
+            buttons.Add(new List<InlineKeyboardButton>
+            {
+                InlineKeyboardButton.WithCallbackData("📅 Agendar Cirugía", "help_schedule"),
+                InlineKeyboardButton.WithCallbackData("✏️ Modificar Cirugía", "help_modify")
+            });
+
+            // Segunda fila: Eliminar y Reportes
+            buttons.Add(new List<InlineKeyboardButton>
+            {
+                InlineKeyboardButton.WithCallbackData("❌ Eliminar Cirugía", "help_delete"),
+                InlineKeyboardButton.WithCallbackData("📊 Reportes", "help_reports")
+            });
+
+            // Tercera fila: Ayuda adicional
+            buttons.Add(new List<InlineKeyboardButton>
+            {
+                InlineKeyboardButton.WithCallbackData("❓ Más Ayuda", "help_more")
+            });
+
+            return new InlineKeyboardMarkup(buttons);
         }
     }
 }

@@ -61,12 +61,12 @@ public class FlowWizardHandler
             appt.IntentosCampoActual++;
             if (appt.IntentosCampoActual >= Appointment.MaxIntentosCampo)
             {
-                appt.CampoQueFalta = Appointment.CampoPendiente.Ninguno;
-                appt.IntentosCampoActual = 0;
-                
-                // Mensaje específico para respuestas no relacionadas
-                var helpMessage = GenerateFieldSpecificHelpMessage(campoQueSeCompleto);
+                // NUEVO: En lugar de abandonar abruptamente, ofrecer opciones al usuario
+                var helpMessage = GenerateContextualHelpMessage(campoQueSeCompleto, rawText);
                 await SendMessageWithRetry(bot, chatId, helpMessage, ct);
+                
+                // No limpiar el campo todavía, dar una oportunidad más
+                appt.IntentosCampoActual = Appointment.MaxIntentosCampo - 1; // Resetear para una oportunidad más
                 return true;
             }
             
@@ -349,6 +349,21 @@ public class FlowWizardHandler
                "🔄 **Recomendación:** Enviá todos los datos de tu cirugía en un solo mensaje.\n\n" +
                "✨ **Ejemplo completo:** `2 CERS mañana 14hs Hospital Italiano Dr. García López Dr. Martínez`\n\n" +
                "💡 Esto es más rápido y evita confusiones. ¡Probá ahora!";
+    }
+
+    /// <summary>
+    /// Genera mensaje contextual cuando el usuario parece desviarse del tema
+    /// </summary>
+    private static string GenerateContextualHelpMessage(Appointment.CampoPendiente campo, string userInput)
+    {
+        var fieldName = CamposExistentes.NombreHumanoCampo(campo);
+        
+        return $"Me pusiste \"{userInput}\" pero necesito **{fieldName}** para seguir.\n\n" +
+               "Podés:\n" +
+               "• Probar con **{fieldName}** otra vez\n" +
+               "• Poner **\"nuevo\"** si querés arrancar de vuelta\n" +
+               "• O mandarme todo: `mañana 14hs Hospital Dr. García CERS`\n\n" +
+               "Dale, tranqui! 😊";
     }
 
     /// <summary>

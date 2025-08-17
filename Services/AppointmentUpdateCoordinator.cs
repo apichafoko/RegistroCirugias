@@ -175,11 +175,15 @@ namespace RegistroCx.Services
                 if (searchResult.NotFound)
                 {
                     await MessageSender.SendWithRetry(chatId,
-                        "❌ No encontré esa cirugía. Podés ser más específico con:\n" +
-                        "• Fecha (ej: \"del lunes\", \"del 23\")\n" +
-                        "• Cirujano (ej: \"de garcia\")\n" +
-                        "• Hora (ej: \"de las 14hs\")\n" +
-                        "• Tipo (ej: \"la CERS\")",
+                        "❌ No encontré esa cirugía.\n\n" +
+                        "💡 <b>Sugerencias:</b>\n" +
+                        "• Verificá que la cirugía esté registrada con <b>/semanal</b> o <b>/mensual</b>\n" +
+                        "• Sé más específico: \"cambiar la cirugia de Garcia del 23/09 a las 15hs\"\n" +
+                        "• Incluí más detalles: fecha completa, apellido del cirujano, etc.\n\n" +
+                        "🔍 <b>Ejemplos:</b>\n" +
+                        "• \"cambiar la hora de fagoaga del 23/09 a las 16hs\"\n" +
+                        "• \"modificar el lugar de la cirugia del lunes\"\n\n" +
+                        "❌ Escribí <b>\"cancelar\"</b> si querés empezar de nuevo.",
                         cancellationToken: ct);
                     return false;
                 }
@@ -195,7 +199,8 @@ namespace RegistroCx.Services
                                  $"{candidate.Cirujano} - {candidate.Cirugia} ({candidate.Lugar})\n";
                     }
                     
-                    message += "\n¿Podrías ser más específico para identificar cuál querés modificar?";
+                    message += "\n¿Podrías ser más específico para identificar cuál querés modificar?\n\n" +
+                              "❌ Escribí <b>\"cancelar\"</b> si querés empezar de nuevo.";
                     
                     await MessageSender.SendWithRetry(chatId, message, cancellationToken: ct);
                     return false;

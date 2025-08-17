@@ -85,7 +85,7 @@ public class FlowMessageHandler
             await MessageSender.SendWithRetry(chatId,
                 "📋 <b>¿CÓMO FUNCIONA?</b>\n" +
                 "Simplemente escribime los datos de tu cirugía en lenguaje natural. Yo entiendo y organizo automáticamente:\n\n" +
-                "🔹 <b>Ejemplo:</b> \"23/08 2 CERS + 1 MLD quiroga ancho uri 14hs\"\n" +
+                "🔹 <b>Ejemplo:</b> \"23/08 2 CERS + 1 MLD Sanchez Sanatorio Anchorena Pedro 14hs\"\n" +
                 "• Detectaré que son 3 cirugías diferentes\n" +
                 "• Extraeré fecha, hora, lugar, cirujano, etc.\n" +
                 "• Te pediré solo los datos que falten\n" +

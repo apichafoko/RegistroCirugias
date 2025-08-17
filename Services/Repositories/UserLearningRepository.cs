@@ -5,6 +5,7 @@ using System.Threading.Tasks;
 using Dapper;
 using Microsoft.Extensions.Logging;
 using Npgsql;
+using NpgsqlTypes;
 using RegistroCx.Domain;
 
 namespace RegistroCx.Services.Repositories;
@@ -22,7 +23,32 @@ public class UserLearningRepository : IUserLearningRepository
 
     private async Task<NpgsqlConnection> OpenAsync(CancellationToken ct = default)
     {
-        var conn = new NpgsqlConnection(_connectionString);
+        var csb = new NpgsqlConnectionStringBuilder();
+
+        if (_connectionString.StartsWith("postgresql://", StringComparison.OrdinalIgnoreCase))
+        {
+            // Parsear URI
+            var uri = new Uri(_connectionString);
+            var userInfo = uri.UserInfo.Split(':', 2);
+            csb.Host = uri.Host;
+            if (uri.Port > 0)
+                csb.Port = uri.Port;
+            csb.Username = userInfo[0];
+            csb.Password = userInfo.Length > 1 ? userInfo[1] : "";
+            csb.Database = uri.AbsolutePath.TrimStart('/');
+
+            // leer parámetros de query
+            var qp = System.Web.HttpUtility.ParseQueryString(uri.Query);
+            if (qp["sslmode"] != null)
+                csb.SslMode = Enum.Parse<SslMode>(qp["sslmode"]!, ignoreCase: true);
+        }
+        else
+        {
+            // asume ya viene en formato clave=valor
+            csb.ConnectionString = _connectionString;
+        }
+
+        var conn = new NpgsqlConnection(csb.ConnectionString);
         await conn.OpenAsync(ct);
         return conn;
     }

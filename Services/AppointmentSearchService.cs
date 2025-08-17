@@ -27,13 +27,19 @@ namespace RegistroCx.Services
         {
             var result = new AppointmentSearchResult();
             
-            // Obtener appointments recientes del usuario (últimos 30 días hacia adelante)
-            var startDate = DateTime.Today;
-            var endDate = DateTime.Today.AddDays(30);
+            Console.WriteLine($"[SEARCH] Searching for: '{searchText}' for user {chatId}");
+            
+            // Obtener appointments del usuario (últimos 30 días atrás y próximos 365 días adelante)
+            // Esto permite buscar cirugías futuras programadas para el próximo año
+            var startDate = DateTime.Today.AddDays(-30);
+            var endDate = DateTime.Today.AddDays(365);
             var userAppointments = await _appointmentRepo.GetByUserAndDateRangeAsync(chatId, startDate, endDate);
 
+            Console.WriteLine($"[SEARCH] Found {userAppointments.Count()} appointments in date range {startDate:dd/MM/yyyy} - {endDate:dd/MM/yyyy}");
+            
             if (!userAppointments.Any())
             {
+                Console.WriteLine("[SEARCH] No appointments found in date range");
                 return result; // NotFound = true
             }
 
@@ -42,6 +48,8 @@ namespace RegistroCx.Services
             foreach (var appointment in userAppointments)
             {
                 var score = CalculateMatchScore(appointment, searchText, contextDate);
+                Console.WriteLine($"[SEARCH] Appointment: {appointment.Cirujano} on {appointment.FechaHora:dd/MM/yyyy HH:mm} - Score: {score}");
+                
                 if (score > 0)
                 {
                     candidates.Add((appointment, score));
@@ -133,17 +141,26 @@ namespace RegistroCx.Services
             // Fechas específicas (dd/mm, dd-mm, etc.)
             var datePatterns = new[]
             {
-                @"\b(\d{1,2})[\/\-](\d{1,2})\b",
-                @"\b(\d{1,2})\s+de\s+\w+\b"
+                @"\b(\d{1,2})[\/\-](\d{1,2})\b",  // 23/09, 23-09
+                @"\b(\d{1,2})\s+de\s+\w+\b"      // 23 de septiembre
             };
 
             foreach (var pattern in datePatterns)
             {
                 var match = Regex.Match(text, pattern);
-                if (match.Success && int.TryParse(match.Groups[1].Value, out var day))
+                if (match.Success && int.TryParse(match.Groups[1].Value, out var day) && match.Groups.Count > 2 && int.TryParse(match.Groups[2].Value, out var month))
                 {
-                    if (appointmentDate.Day == day)
-                        score += 40;
+                    // Coincidencia exacta de día y mes
+                    if (appointmentDate.Day == day && appointmentDate.Month == month)
+                    {
+                        score += 80; // Alta puntuación para coincidencia exacta de fecha
+                        Console.WriteLine($"[SEARCH] Exact date match found: {day}/{month} for appointment on {appointmentDate:dd/MM/yyyy}");
+                    }
+                    // Solo día coincide
+                    else if (appointmentDate.Day == day)
+                    {
+                        score += 20; // Menor puntuación solo por día
+                    }
                 }
             }
 

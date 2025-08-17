@@ -9,6 +9,7 @@ using RegistroCx.Services.Reports;
 using RegistroCx.Services.Caching;
 using RegistroCx.Services.Analytics;
 using RegistroCx.Services.UI;
+using RegistroCx.Services.Context;
 using Telegram.Bot;
 using RegistroCx.ProgramServices.Services.Telegram;
 
@@ -133,7 +134,17 @@ public static class ServiceCollectionExtensions
         services.AddMemoryCache(); // Required for caching service
         services.AddScoped<ICacheService, MemoryCacheService>();
         services.AddScoped<IParsingAnalyticsService, ParsingAnalyticsService>();
-        services.AddScoped<IQuickEditService, QuickEditService>();
+        services.AddScoped<IQuickEditService>(provider =>
+        {
+            var cacheService = provider.GetRequiredService<ICacheService>();
+            var logger = provider.GetRequiredService<ILogger<QuickEditService>>();
+            var confirmationService = provider.GetRequiredService<AppointmentConfirmationService>();
+            var pendingAppointments = provider.GetRequiredService<Dictionary<long, RegistroCx.Models.Appointment>>();
+            return new QuickEditService(cacheService, logger, confirmationService, pendingAppointments);
+        });
+        
+        // Context Management
+        services.AddScoped<IConversationContextManager, ConversationContextManager>();
         
         // Diccionarios compartidos para mantener estado entre requests
         services.AddSingleton<Dictionary<long, RegistroCx.Models.Appointment>>();
@@ -164,7 +175,8 @@ public static class ServiceCollectionExtensions
             var analytics = provider.GetRequiredService<IParsingAnalyticsService>();
             var cache = provider.GetRequiredService<ICacheService>();
             var quickEdit = provider.GetRequiredService<IQuickEditService>();
-            return new CirugiaFlowService(llm, pending, confirmationService, oauthService, userRepo, calendarSync, appointmentRepo, multiSurgeryParser, reportService, anesthesiologistSearchService, learningService, searchService, modificationService, updateCoordinator, analytics, cache, quickEdit);
+            var contextManager = provider.GetRequiredService<IConversationContextManager>();
+            return new CirugiaFlowService(llm, pending, confirmationService, oauthService, userRepo, calendarSync, appointmentRepo, multiSurgeryParser, reportService, anesthesiologistSearchService, learningService, searchService, modificationService, updateCoordinator, analytics, cache, quickEdit, contextManager);
         });
         services.AddScoped<AppointmentConfirmationService>(provider =>
         {

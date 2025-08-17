@@ -9,6 +9,7 @@ using RegistroCx.ProgramServices.Services.Telegram;
 using RegistroCx.Services.Analytics;
 using RegistroCx.Services.Caching;
 using RegistroCx.Services.UI;
+using RegistroCx.Services.Context;
 using RegistroCx.models;
 using System.Text.RegularExpressions;
 
@@ -73,6 +74,7 @@ public class CirugiaFlowService
     private readonly IParsingAnalyticsService _analytics;
     private readonly ICacheService _cache;
     private readonly IQuickEditService _quickEdit;
+    private readonly IConversationContextManager _contextManager;
 
     public CirugiaFlowService(
         LLMOpenAIAssistant llm, 
@@ -91,7 +93,8 @@ public class CirugiaFlowService
         AppointmentUpdateCoordinator updateCoordinator,
         IParsingAnalyticsService analytics,
         ICacheService cache,
-        IQuickEditService quickEdit)
+        IQuickEditService quickEdit,
+        IConversationContextManager contextManager)
     {
         _llm = llm;
         _pending = pending;
@@ -105,6 +108,7 @@ public class CirugiaFlowService
         _analytics = analytics;
         _cache = cache;
         _quickEdit = quickEdit;
+        _contextManager = contextManager;
         _stateManager = new FlowStateManager(_pending);
         _messageHandler = new FlowMessageHandler(oauthService, userRepo, calendarSync, appointmentRepo, reportService, quickEdit);
         _wizardHandler = new FlowWizardHandler(anesthesiologistSearchService, userRepo, analytics, quickEdit);
@@ -120,10 +124,46 @@ public class CirugiaFlowService
             return;
         }
         
+        // CRÍTICO: Verificar comando "cancelar" ANTES de todo
+        if (IsCancelCommand(rawText))
+        {
+            Console.WriteLine("[FLOW] 🚫 Cancel command detected, clearing context");
+            _stateManager.ClearContext(chatId);
+            await MessageSender.SendWithRetry(chatId, "❌ Operación cancelada. Podés empezar de nuevo enviando los datos de tu cirugía.", cancellationToken: ct);
+            return;
+        }
+
         // INMEDIATO: Enviar mensaje de "Procesando..." para reducir ansiedad del usuario
         await MessageSender.SendWithRetry(chatId, "⏳ Procesando...", cancellationToken: ct);
 
-        // 1. CLASIFICAR INTENT del mensaje
+        // NUEVA LÓGICA: Verificar contexto conversacional antes de clasificar intent
+        var appt = _stateManager.GetOrCreateAppointment(chatId);
+        var currentContext = _contextManager.ExtractContext(appt);
+        
+        // Si hay contexto activo, verificar relevancia del mensaje
+        if (currentContext.Type != ContextType.None)
+        {
+            var relevance = await _contextManager.AnalyzeMessageRelevanceAsync(rawText, currentContext, ct);
+            
+            if (!relevance.IsRelevant)
+            {
+                // Manejar desviación de contexto
+                if (await _contextManager.HandleContextDeviationAsync(bot, chatId, rawText, currentContext, ct))
+                {
+                    // Esperar respuesta del usuario sobre si quiere continuar o cambiar
+                    return;
+                }
+            }
+            
+            // Si debe saltear intent classification, ir directo al wizard/confirmación
+            if (_contextManager.ShouldBypassIntentClassification(rawText, currentContext))
+            {
+                await HandleWithActiveContext(bot, chatId, rawText, appt, currentContext, ct);
+                return;
+            }
+        }
+
+        // 1. CLASIFICAR INTENT del mensaje (solo si no hay contexto activo o es cambio explícito)
         var intent = await _llmProcessor.ClassifyIntentAsync(rawText);
         
         // 2. Manejar intents de modificación
@@ -147,8 +187,7 @@ public class CirugiaFlowService
             return;
         }
 
-        // Obtener o crear appointment
-        var appt = _stateManager.GetOrCreateAppointment(chatId);
+        // El appointment ya fue obtenido arriba para análisis de contexto
         appt.HistoricoInputs.Add(rawText);
 
         // Manejar continuación después de warning de validación
@@ -236,6 +275,15 @@ public class CirugiaFlowService
             return;
         }
         
+        // CRÍTICO: Verificar intenciones de modificación ANTES de asumir que es nuevo registro
+        // Esto previene que "quiero cambiar..." sea procesado como nueva cirugía
+        if (IsModificationIntent(rawText))
+        {
+            Console.WriteLine("[FLOW] 🔧 Modification intent detected, routing to HandleModificationAsync");
+            await HandleModificationAsync(bot, chatId, rawText, ct);
+            return;
+        }
+
         // NUEVO: Detectar múltiples cirugías ANTES del procesamiento LLM con validaciones completas
         if (appt.HistoricoInputs.Count == 1) // Solo para el primer input del usuario
         {
@@ -1433,12 +1481,9 @@ IMPORTANTE: Devuelve ÚNICAMENTE JSON válido, sin texto adicional.";
             
             if (!modifications.HasChanges)
             {
-                await MessageSender.SendWithRetry(chatId,
-                    "❓ No pude identificar qué querés modificar. Podés decir algo como:\n" +
-                    "• \"cambiar la hora a las 16hs\"\n" +
-                    "• \"mover al sanatorio\"\n" +
-                    "• \"cambiar cirujano a garcía\"",
-                    cancellationToken: ct);
+                // El usuario encontró la cirugía pero no especificó qué cambiar
+                // Mostrar datos actuales y preguntar qué quiere modificar
+                await ShowAppointmentDetailsAndAskWhatToModify(bot, appointment, chatId, ct);
                 return;
             }
             
@@ -1523,6 +1568,235 @@ IMPORTANTE: Devuelve ÚNICAMENTE JSON válido, sin texto adicional.";
 
     // Métodos públicos para gestión
     public void ReiniciarConversacion(long chatId) => _stateManager.ClearContext(chatId);
+
+    /// <summary>
+    /// Maneja mensajes cuando hay un contexto conversacional activo
+    /// </summary>
+    private async Task HandleWithActiveContext(ITelegramBotClient bot, long chatId, string rawText, Appointment appt, ConversationContext context, CancellationToken ct)
+    {
+        try
+        {
+            // Agregar el input al historial
+            appt.HistoricoInputs.Add(rawText);
+            
+            switch (context.Type)
+            {
+                case ContextType.FieldWizard:
+                    // Delegar al wizard handler
+                    if (await _wizardHandler.HandleFieldWizard(bot, appt, rawText, chatId, ct))
+                    {
+                        return; // Wizard manejó el mensaje
+                    }
+                    
+                    // Si wizard no lo manejó, continuar con flujo normal
+                    await _llmProcessor.ProcessWithLLM(bot, appt, rawText, chatId, ct);
+                    break;
+                    
+                case ContextType.Confirming:
+                    // Manejar respuestas de confirmación
+                    await HandleConfirmationResponse(bot, appt, rawText, chatId, ct);
+                    break;
+                    
+                case ContextType.RegisteringSurgery:
+                    // Continuar con registro normal
+                    await _llmProcessor.ProcessWithLLM(bot, appt, rawText, chatId, ct);
+                    break;
+                    
+                case ContextType.ModifyingSurgery:
+                    // Manejar modificación en contexto
+                    await HandleModificationInContext(bot, appt, rawText, chatId, ct);
+                    break;
+                    
+                default:
+                    // Fallback a procesamiento normal
+                    await _llmProcessor.ProcessWithLLM(bot, appt, rawText, chatId, ct);
+                    break;
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[CONTEXT] Error handling message with active context: {ex.Message}");
+            
+            // Fallback a procesamiento normal
+            await _llmProcessor.ProcessWithLLM(bot, appt, rawText, chatId, ct);
+        }
+    }
+
+    /// <summary>
+    /// Maneja respuestas cuando el usuario está en modo confirmación
+    /// </summary>
+    private async Task HandleConfirmationResponse(ITelegramBotClient bot, Appointment appt, string rawText, long chatId, CancellationToken ct)
+    {
+        var response = rawText.Trim().ToLowerInvariant();
+        
+        // Respuestas afirmativas
+        if (response is "sí" or "si" or "yes" or "ok" or "confirmar" or "confirmo" or "dale" or "perfecto")
+        {
+            // Proceder con confirmación
+            await _confirmationService.ProcessConfirmationAsync(bot, appt, chatId, ct);
+            _stateManager.ClearContext(chatId);
+            return;
+        }
+        
+        // Respuestas negativas o de edición
+        if (response is "no" or "nope" or "cambiar" or "editar" or "modificar" or "corregir")
+        {
+            appt.ConfirmacionPendiente = false;
+            await MessageSender.SendWithRetry(chatId, 
+                "Dale, ¿qué querés cambiar? Podés decirme qué cosa (fecha, lugar, cirujano) o mandarme el dato nuevo.", 
+                cancellationToken: ct);
+            return;
+        }
+        
+        // Si no es una respuesta clara, recordar el contexto
+        await MessageSender.SendWithRetry(chatId,
+            $"No entendí \"{rawText}\".\n\n" +
+            "Necesito que me confirmes si están bien los datos.\n" +
+            "Poneme 'sí' para confirmar o 'no' si querés cambiar algo.",
+            cancellationToken: ct);
+    }
+
+    /// <summary>
+    /// Maneja modificación cuando ya estamos en contexto de modificación
+    /// </summary>
+    private async Task HandleModificationInContext(ITelegramBotClient bot, Appointment appt, string rawText, long chatId, CancellationToken ct)
+    {
+        // Si está en modo de edición de campo específico, usar el wizard
+        if (appt.CampoAEditar != Appointment.CampoPendiente.Ninguno)
+        {
+            // Delegar al message handler para manejar edición
+            await _messageHandler.HandleEditMode(bot, appt, rawText, chatId, ct, _llmProcessor);
+            return;
+        }
+        
+        // Sino, procesar como nuevo input de modificación
+        await _llmProcessor.ProcessWithLLM(bot, appt, rawText, chatId, ct);
+    }
+
+    /// <summary>
+    /// Detecta rápidamente si un mensaje tiene intención de modificación
+    /// usando patrones básicos sin LLM para máxima velocidad
+    /// </summary>
+    private bool IsModificationIntent(string rawText)
+    {
+        var normalized = rawText.Trim().ToLowerInvariant();
+        
+        // Patrones claros de modificación
+        var modificationPatterns = new[]
+        {
+            "quiero cambiar",
+            "necesito cambiar", 
+            "cambiar la cirugia",
+            "cambiar cirugia",
+            "modificar la cirugia",
+            "modificar cirugia",
+            "editar la cirugia",
+            "editar cirugia",
+            "quiero modificar",
+            "necesito modificar",
+            "cambiar el horario",
+            "cambiar la hora",
+            "cambiar el lugar",
+            "cambiar cirujano",
+            "cambiar anestesiologo"
+        };
+        
+        foreach (var pattern in modificationPatterns)
+        {
+            if (normalized.Contains(pattern))
+            {
+                Console.WriteLine($"[MODIFICATION-INTENT] Found pattern: '{pattern}' in message");
+                return true;
+            }
+        }
+        
+        return false;
+    }
+
+    /// <summary>
+    /// Muestra los detalles de la cirugía encontrada y pregunta qué quiere modificar con botones
+    /// </summary>
+    private async Task ShowAppointmentDetailsAndAskWhatToModify(ITelegramBotClient bot, Appointment appointment, long chatId, CancellationToken ct)
+    {
+        try
+        {
+            Console.WriteLine($"[MODIFY-DETAILS] Showing appointment details for modification");
+            
+            // Construir mensaje con detalles actuales
+            var details = "✅ <b>Encontré esta cirugía:</b>\n\n";
+            details += $"📅 <b>Fecha:</b> {appointment.FechaHora?.ToString("dd/MM/yyyy") ?? "No definida"}\n";
+            details += $"⏰ <b>Hora:</b> {appointment.FechaHora?.ToString("HH:mm") ?? "No definida"}\n";
+            details += $"🏥 <b>Lugar:</b> {appointment.Lugar ?? "No definido"}\n";
+            details += $"👨‍⚕️ <b>Cirujano:</b> {appointment.Cirujano ?? "No definido"}\n";
+            details += $"🔬 <b>Cirugía:</b> {appointment.Cirugia ?? "No definida"}\n";
+            details += $"🔢 <b>Cantidad:</b> {appointment.Cantidad?.ToString() ?? "1"}\n";
+            details += $"💉 <b>Anestesiólogo:</b> {appointment.Anestesiologo ?? "No asignado"}\n\n";
+            details += "❓ <b>¿Qué querés cambiar?</b>";
+
+            // Crear teclado con opciones de modificación
+            if (_quickEdit != null)
+            {
+                var keyboard = await _quickEdit.CreateModificationKeyboard(appointment);
+                await MessageSender.SendWithRetry(chatId, details, replyMarkup: keyboard, cancellationToken: ct);
+            }
+            else
+            {
+                // Fallback sin botones
+                details += "\n\n💡 <b>Podés decir:</b>\n";
+                details += "• \"cambiar la hora a las 16hs\"\n";
+                details += "• \"cambiar el lugar a Anchorena\"\n";
+                details += "• \"cambiar cirujano a García\"\n";
+                details += "• \"cambiar anestesiólogo\"\n\n";
+                details += "❌ Escribí <b>\"cancelar\"</b> para empezar de nuevo.";
+                
+                await MessageSender.SendWithRetry(chatId, details, cancellationToken: ct);
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[MODIFY-DETAILS] Error showing appointment details: {ex.Message}");
+            await MessageSender.SendWithRetry(chatId,
+                "❌ Error mostrando los detalles. Escribí **\"cancelar\"** para empezar de nuevo.",
+                cancellationToken: ct);
+        }
+    }
+
+    /// <summary>
+    /// Detecta comandos de cancelación para reiniciar el contexto
+    /// </summary>
+    private bool IsCancelCommand(string rawText)
+    {
+        var normalized = rawText.Trim().ToLowerInvariant();
+        
+        var cancelPatterns = new[]
+        {
+            "cancelar",
+            "cancela",
+            "cancel",
+            "salir",
+            "salí",
+            "exit",
+            "stop",
+            "para",
+            "parar",
+            "empezar de nuevo",
+            "empezar otra vez",
+            "reiniciar",
+            "restart"
+        };
+        
+        foreach (var pattern in cancelPatterns)
+        {
+            if (normalized == pattern || normalized.Contains($" {pattern} ") || normalized.StartsWith($"{pattern} ") || normalized.EndsWith($" {pattern}"))
+            {
+                Console.WriteLine($"[CANCEL-COMMAND] Found pattern: '{pattern}' in message");
+                return true;
+            }
+        }
+        
+        return false;
+    }
+
     public int ObtenerConversacionesActivas() => _stateManager.GetActiveConversationsCount();
     public void LimpiarConversacionesAntiguas(TimeSpan tiempoLimite) => _stateManager.CleanOldConversations(tiempoLimite);
 }

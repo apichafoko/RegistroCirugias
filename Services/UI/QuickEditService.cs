@@ -8,6 +8,8 @@ using Telegram.Bot;
 using Telegram.Bot.Types.ReplyMarkups;
 using RegistroCx.Models;
 using RegistroCx.Services.Caching;
+using RegistroCx.Services;
+using RegistroCx.Services.Flow;
 using RegistroCx.ProgramServices.Services.Telegram;
 
 namespace RegistroCx.Services.UI
@@ -16,6 +18,8 @@ namespace RegistroCx.Services.UI
     {
         private readonly ICacheService _cacheService;
         private readonly ILogger<QuickEditService> _logger;
+        private readonly AppointmentConfirmationService? _confirmationService;
+        private readonly Dictionary<long, Appointment>? _pendingAppointments;
         
         // Callback data prefixes
         private const string CONFIRM_PREFIX = "confirm_";
@@ -27,10 +31,12 @@ namespace RegistroCx.Services.UI
         private const string LOCATION_PREFIX = "location_";
         private const string BACK_PREFIX = "back_";
 
-        public QuickEditService(ICacheService cacheService, ILogger<QuickEditService> logger)
+        public QuickEditService(ICacheService cacheService, ILogger<QuickEditService> logger, AppointmentConfirmationService? confirmationService = null, Dictionary<long, Appointment>? pendingAppointments = null)
         {
             _cacheService = cacheService;
             _logger = logger;
+            _confirmationService = confirmationService;
+            _pendingAppointments = pendingAppointments;
         }
 
         public InlineKeyboardMarkup GenerateConfirmationKeyboard(Appointment appointment)
@@ -232,7 +238,22 @@ namespace RegistroCx.Services.UI
                         return true;
 
                     case "cancel":
-                        await HandleCancelAsync(bot, chatId, messageId, parameter, ct);
+                        if (parameter.StartsWith("modification_"))
+                        {
+                            await HandleCancelModificationAsync(bot, chatId, messageId, ct);
+                        }
+                        else
+                        {
+                            await HandleCancelAsync(bot, chatId, messageId, parameter, ct);
+                        }
+                        return true;
+                        
+                    case "modify":
+                        await HandleModifyFieldAsync(bot, chatId, messageId, callbackData, ct);
+                        return true;
+                        
+                    case "help":
+                        await HandleHelpOptionAsync(bot, chatId, messageId, parameter, ct);
                         return true;
 
                     case "date":
@@ -316,10 +337,39 @@ namespace RegistroCx.Services.UI
         // Private handler methods
         private async Task HandleConfirmAsync(ITelegramBotClient bot, long chatId, int messageId, string appointmentId, CancellationToken ct)
         {
-            await MessageSender.SendWithRetry(chatId, "✅ Cirugía confirmada exitosamente.", cancellationToken: ct);
-            
-            // Remove inline keyboard
-            await UpdateMessageKeyboardAsync(bot, chatId, messageId, new InlineKeyboardMarkup(Array.Empty<InlineKeyboardButton[]>()), ct);
+            try
+            {
+                // Get appointment from pending appointments
+                if (_pendingAppointments != null && _pendingAppointments.TryGetValue(chatId, out var appointment))
+                {
+                    // Use the full confirmation service to create calendar event and save to DB
+                    if (_confirmationService != null)
+                    {
+                        await _confirmationService.ProcessConfirmationAsync(bot, appointment, chatId, ct);
+                        
+                        // Clear from pending after successful confirmation
+                        _pendingAppointments.Remove(chatId);
+                    }
+                    else
+                    {
+                        // Fallback if confirmation service is not available
+                        await MessageSender.SendWithRetry(chatId, "✅ Cirugía confirmada exitosamente.", cancellationToken: ct);
+                    }
+                }
+                else
+                {
+                    // Fallback if appointment not found in context
+                    await MessageSender.SendWithRetry(chatId, "✅ Cirugía confirmada exitosamente.", cancellationToken: ct);
+                }
+                
+                // Remove inline keyboard
+                await UpdateMessageKeyboardAsync(bot, chatId, messageId, new InlineKeyboardMarkup(Array.Empty<InlineKeyboardButton[]>()), ct);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error confirming appointment for chat {ChatId}", chatId);
+                await MessageSender.SendWithRetry(chatId, "❌ Error confirmando cirugía. Intenta nuevamente.", cancellationToken: ct);
+            }
         }
 
         private async Task HandleEditAsync(ITelegramBotClient bot, long chatId, int messageId, string appointmentId, CancellationToken ct)
@@ -441,6 +491,183 @@ namespace RegistroCx.Services.UI
             var confirmationKeyboard = GenerateConfirmationKeyboard(appointment);
             
             await UpdateMessageKeyboardAsync(bot, chatId, messageId, confirmationKeyboard, ct);
+        }
+
+        public Task<InlineKeyboardMarkup> CreateModificationKeyboard(Appointment appointment)
+        {
+            var buttons = new List<List<InlineKeyboardButton>>();
+
+            // Primera fila: Fecha y Hora
+            buttons.Add(new List<InlineKeyboardButton>
+            {
+                InlineKeyboardButton.WithCallbackData("📅 Fecha", $"modify_date_{appointment.Id}"),
+                InlineKeyboardButton.WithCallbackData("⏰ Hora", $"modify_time_{appointment.Id}")
+            });
+
+            // Segunda fila: Lugar y Cirujano
+            buttons.Add(new List<InlineKeyboardButton>
+            {
+                InlineKeyboardButton.WithCallbackData("🏥 Lugar", $"modify_location_{appointment.Id}"),
+                InlineKeyboardButton.WithCallbackData("👨‍⚕️ Cirujano", $"modify_surgeon_{appointment.Id}")
+            });
+
+            // Tercera fila: Cirugía y Cantidad
+            buttons.Add(new List<InlineKeyboardButton>
+            {
+                InlineKeyboardButton.WithCallbackData("🔬 Cirugía", $"modify_surgery_{appointment.Id}"),
+                InlineKeyboardButton.WithCallbackData("🔢 Cantidad", $"modify_quantity_{appointment.Id}")
+            });
+
+            // Cuarta fila: Anestesiólogo
+            buttons.Add(new List<InlineKeyboardButton>
+            {
+                InlineKeyboardButton.WithCallbackData("💉 Anestesiólogo", $"modify_anesthesiologist_{appointment.Id}")
+            });
+
+            // Quinta fila: Cancelar
+            buttons.Add(new List<InlineKeyboardButton>
+            {
+                InlineKeyboardButton.WithCallbackData("❌ Cancelar", $"cancel_modification_{appointment.Id}")
+            });
+
+            return Task.FromResult(new InlineKeyboardMarkup(buttons));
+        }
+        
+        private async Task HandleModifyFieldAsync(ITelegramBotClient bot, long chatId, int messageId, string callbackData, CancellationToken ct)
+        {
+            try
+            {
+                // Parse: modify_date_123, modify_time_123, etc.
+                var parts = callbackData.Split('_');
+                if (parts.Length < 3) return;
+                
+                var fieldType = parts[1]; // date, time, location, etc.
+                var appointmentId = parts[2];
+                
+                var responseMessage = fieldType switch
+                {
+                    "date" => "📅 <b>¿Cuál es la nueva fecha?</b>\n\n💡 Ejemplos: \"25/09\", \"mañana\", \"el lunes\", \"23/12/2025\"",
+                    "time" => "⏰ <b>¿Cuál es el nuevo horario?</b>\n\n💡 Ejemplos: \"16hs\", \"14:30\", \"8 de la mañana\"",
+                    "location" => "🏥 <b>¿Cuál es el nuevo lugar?</b>\n\n💡 Ejemplos: \"Sanatorio Anchorena\", \"Hospital Italiano\", \"Clínica Santa Isabel\"",
+                    "surgeon" => "👨‍⚕️ <b>¿Cuál es el nuevo cirujano?</b>\n\n💡 Ejemplos: \"Dr. García\", \"Rodriguez\", \"Dra. Martinez López\"",
+                    "surgery" => "🔬 <b>¿Cuál es el nuevo tipo de cirugía?</b>\n\n💡 Ejemplos: \"CERS\", \"apendicectomía\", \"cesárea\", \"adenoides\"",
+                    "quantity" => "🔢 <b>¿Cuál es la nueva cantidad?</b>\n\n💡 Ejemplos: \"2\", \"3 cirugías\", \"una sola\"",
+                    "anesthesiologist" => "💉 <b>¿Cuál es el nuevo anestesiólogo?</b>\n\n💡 Ejemplos: \"Dr. Pérez\", \"sin anestesiólogo\", \"no asignar\"",
+                    _ => "Escribí el nuevo valor y yo te ayudo a procesarlo."
+                };
+                
+                responseMessage += "\n\n❌ Escribí <b>\"cancelar\"</b> si querés empezar de nuevo.";
+                
+                await MessageSender.SendWithRetry(chatId, responseMessage, cancellationToken: ct);
+                
+                // Remove the inline keyboard from the previous message
+                await UpdateMessageKeyboardAsync(bot, chatId, messageId, new InlineKeyboardMarkup(Array.Empty<InlineKeyboardButton[]>()), ct);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error handling modify field callback for chat {ChatId}", chatId);
+                await MessageSender.SendWithRetry(chatId, "❌ Error procesando la modificación. Escribí **\"cancelar\"** para empezar de nuevo.", cancellationToken: ct);
+            }
+        }
+        
+        private async Task HandleCancelModificationAsync(ITelegramBotClient bot, long chatId, int messageId, CancellationToken ct)
+        {
+            try
+            {
+                await MessageSender.SendWithRetry(chatId, "❌ Modificación cancelada. Podés empezar de nuevo enviando los datos de tu cirugía.", cancellationToken: ct);
+                
+                // Remove the inline keyboard
+                await UpdateMessageKeyboardAsync(bot, chatId, messageId, new InlineKeyboardMarkup(Array.Empty<InlineKeyboardButton[]>()), ct);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error handling cancel modification for chat {ChatId}", chatId);
+            }
+        }
+        
+        private async Task HandleHelpOptionAsync(ITelegramBotClient bot, long chatId, int messageId, string option, CancellationToken ct)
+        {
+            try
+            {
+                var responseMessage = option switch
+                {
+                    "schedule" => 
+                        "📅 <b>AGENDAR CIRUGÍA</b>\n\n" +
+                        "Simplemente escribí los datos de tu cirugía en lenguaje natural:\n\n" +
+                        "💡 <b>Ejemplos:</b>\n" +
+                        "• \"Mañana 14hs CERS con Quiroga en Anchorena\"\n" +
+                        "• \"23/09 2 adenoides + 1 MLD García Hospital Italiano\"\n" +
+                        "• \"Lunes 16hs apendicectomía Dr. Rodriguez\"\n\n" +
+                        "🎯 <b>Tips:</b>\n" +
+                        "• Incluí fecha, hora, tipo de cirugía, cirujano y lugar\n" +
+                        "• Podés usar mensajes de voz\n" +
+                        "• Si falta algo, te lo voy a preguntar\n" +
+                        "• Automáticamente se crea en tu Google Calendar",
+
+                    "modify" => 
+                        "✏️ <b>MODIFICAR CIRUGÍA</b>\n\n" +
+                        "Para modificar una cirugía existente:\n\n" +
+                        "💡 <b>Ejemplos:</b>\n" +
+                        "• \"Quiero cambiar la cirugía de García del 23/09\"\n" +
+                        "• \"Modificar la hora de la CERS del lunes a las 16hs\"\n" +
+                        "• \"Cambiar el lugar de la cirugía de mañana al Italiano\"\n\n" +
+                        "🎯 <b>Tips:</b>\n" +
+                        "• Mencioná algún dato que identifique la cirugía (cirujano, fecha)\n" +
+                        "• Te voy a mostrar las opciones encontradas\n" +
+                        "• Podés cambiar fecha, hora, lugar, cirujano, etc.",
+
+                    "delete" => 
+                        "❌ <b>ELIMINAR CIRUGÍA</b>\n\n" +
+                        "Para eliminar una cirugía agendada:\n\n" +
+                        "💡 <b>Ejemplos:</b>\n" +
+                        "• \"Cancelar la cirugía de García del 23/09\"\n" +
+                        "• \"Eliminar la CERS del lunes\"\n" +
+                        "• \"Borrar la cirugía de mañana\"\n\n" +
+                        "🎯 <b>Tips:</b>\n" +
+                        "• Mencioná datos que identifiquen la cirugía\n" +
+                        "• Te voy a pedir confirmación antes de eliminar\n" +
+                        "• También se elimina del Google Calendar",
+
+                    "reports" => 
+                        "📊 <b>REPORTES</b>\n\n" +
+                        "Para ver resúmenes de tus cirugías:\n\n" +
+                        "💡 <b>Comandos:</b>\n" +
+                        "• <b>/semanal</b> - Cirugías de esta semana\n" +
+                        "• <b>/mensual</b> - Cirugías del último mes\n\n" +
+                        "🎯 <b>Tips:</b>\n" +
+                        "• Los reportes muestran fecha, hora, lugar, cirujano\n" +
+                        "• Se ordenan por fecha\n" +
+                        "• Incluyen todas las cirugías confirmadas",
+
+                    "more" => 
+                        "❓ <b>MÁS AYUDA</b>\n\n" +
+                        "🔧 <b>Comandos útiles:</b>\n" +
+                        "• <b>/ayuda</b> - Mostrar este menú\n" +
+                        "• <b>/semanal</b> - Reporte semanal\n" +
+                        "• <b>/mensual</b> - Reporte mensual\n" +
+                        "• <b>cancelar</b> - Cancelar operación actual\n\n" +
+                        "💬 <b>Características:</b>\n" +
+                        "• Acepto mensajes de voz 🎤\n" +
+                        "• Proceso múltiples cirugías juntas\n" +
+                        "• Sincronización con Google Calendar\n" +
+                        "• Invitaciones automáticas a anestesiólogos\n\n" +
+                        "🚀 <b>¡Empezá escribiendo tu cirugía!</b>",
+
+                    _ => "❓ Opción no reconocida. Escribí <b>/ayuda</b> para ver el menú principal."
+                };
+
+                responseMessage += "\n\n🔙 Escribí <b>/ayuda</b> para volver al menú principal.";
+
+                await MessageSender.SendWithRetry(chatId, responseMessage, cancellationToken: ct);
+                
+                // Remove the inline keyboard from the help message
+                await UpdateMessageKeyboardAsync(bot, chatId, messageId, new InlineKeyboardMarkup(Array.Empty<InlineKeyboardButton[]>()), ct);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error handling help option {Option} for chat {ChatId}", option, chatId);
+                await MessageSender.SendWithRetry(chatId, "❌ Error mostrando la ayuda. Escribí <b>/ayuda</b> para intentar de nuevo.", cancellationToken: ct);
+            }
         }
     }
 }
