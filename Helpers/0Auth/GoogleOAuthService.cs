@@ -105,6 +105,7 @@ public class GoogleOAuthService : IGoogleOAuthService
             profile.GoogleTokenExpiry = token.ExpiresAt?.UtcDateTime;
             profile.OAuthNonce = null;
             profile.State = UserState.Ready;
+            profile.CalendarAutorizado = true; // ✅ Marcar calendario como autorizado
             await _repo.SaveAsync(profile, ct);
         }
 

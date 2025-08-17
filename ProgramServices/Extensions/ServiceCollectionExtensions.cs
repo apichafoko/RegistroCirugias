@@ -92,10 +92,12 @@ public static class ServiceCollectionExtensions
             return new AnesthesiologistRepository(dbOptions.Value.ConnectionString);
         });
         
-        services.AddScoped<IUsuarioTelegramRepository>(provider =>
+        // UsuarioTelegramRepository eliminado - funcionalidad migrada a UserProfileRepository
+        
+        services.AddScoped<IEquipoRepository>(provider =>
         {
             var dbOptions = provider.GetRequiredService<Microsoft.Extensions.Options.IOptions<DatabaseOptions>>();
-            return new UsuarioTelegramRepository(dbOptions.Value.ConnectionString);
+            return new EquipoRepository(dbOptions.Value.ConnectionString);
         });
         
         services.AddScoped<RegistroCx.Helpers._0Auth.IGoogleOAuthService>(provider =>
@@ -105,7 +107,13 @@ public static class ServiceCollectionExtensions
             var userRepo = provider.GetRequiredService<IUserProfileRepository>();
             return new RegistroCx.Helpers._0Auth.GoogleOAuthService(googleOptions, httpClient, userRepo);
         });
-        services.AddScoped<IOnboardingService, RegistroCx.Services.Onboarding.OnboardingService>();
+        services.AddScoped<IOnboardingService>(provider =>
+        {
+            var userRepo = provider.GetRequiredService<IUserProfileRepository>();
+            var googleOAuth = provider.GetRequiredService<RegistroCx.Helpers._0Auth.IGoogleOAuthService>();
+            var logger = provider.GetRequiredService<ILogger<RegistroCx.Services.Onboarding.OnboardingService>>();
+            return new RegistroCx.Services.Onboarding.OnboardingService(userRepo, googleOAuth, logger);
+        });
         services.AddScoped<LLMOpenAIAssistant>(provider =>
         {
             var openAiOptions = provider.GetRequiredService<Microsoft.Extensions.Options.IOptions<OpenAIOptions>>().Value;
@@ -130,6 +138,14 @@ public static class ServiceCollectionExtensions
             return new UserLearningService(learningRepo, logger);
         });
         
+        services.AddScoped<EquipoService>(provider =>
+        {
+            var equipoRepo = provider.GetRequiredService<IEquipoRepository>();
+            var userProfileRepo = provider.GetRequiredService<IUserProfileRepository>();
+            var logger = provider.GetRequiredService<ILogger<EquipoService>>();
+            return new EquipoService(equipoRepo, userProfileRepo, logger);
+        });
+        
         // Nuevos servicios para MVP improvements
         services.AddMemoryCache(); // Required for caching service
         services.AddScoped<ICacheService, MemoryCacheService>();
@@ -149,10 +165,21 @@ public static class ServiceCollectionExtensions
         // Diccionarios compartidos para mantener estado entre requests
         services.AddSingleton<Dictionary<long, RegistroCx.Models.Appointment>>();
         services.AddSingleton<Dictionary<long, RegistroCx.Services.Reports.ReportService.ReportCommandState>>();
-        services.AddScoped<CalendarSyncService>();
+        services.AddScoped<CalendarSyncService>(provider =>
+        {
+            var appointmentRepo = provider.GetRequiredService<IAppointmentRepository>();
+            var calendarService = provider.GetRequiredService<IGoogleCalendarService>();
+            var equipoService = provider.GetRequiredService<EquipoService>();
+            return new CalendarSyncService(appointmentRepo, calendarService, equipoService);
+        });
         
         // Nuevos servicios para modificación de appointments
-        services.AddScoped<AppointmentSearchService>();
+        services.AddScoped<AppointmentSearchService>(provider =>
+        {
+            var appointmentRepo = provider.GetRequiredService<IAppointmentRepository>();
+            var equipoService = provider.GetRequiredService<EquipoService>();
+            return new AppointmentSearchService(appointmentRepo, equipoService);
+        });
         services.AddScoped<AppointmentModificationService>();
         services.AddScoped<AppointmentUpdateCoordinator>();
         
@@ -176,7 +203,8 @@ public static class ServiceCollectionExtensions
             var cache = provider.GetRequiredService<ICacheService>();
             var quickEdit = provider.GetRequiredService<IQuickEditService>();
             var contextManager = provider.GetRequiredService<IConversationContextManager>();
-            return new CirugiaFlowService(llm, pending, confirmationService, oauthService, userRepo, calendarSync, appointmentRepo, multiSurgeryParser, reportService, anesthesiologistSearchService, learningService, searchService, modificationService, updateCoordinator, analytics, cache, quickEdit, contextManager);
+            var equipoService = provider.GetRequiredService<EquipoService>();
+            return new CirugiaFlowService(llm, pending, confirmationService, oauthService, userRepo, calendarSync, appointmentRepo, multiSurgeryParser, reportService, anesthesiologistSearchService, learningService, searchService, modificationService, updateCoordinator, analytics, cache, quickEdit, contextManager, equipoService);
         });
         services.AddScoped<AppointmentConfirmationService>(provider =>
         {
@@ -186,7 +214,8 @@ public static class ServiceCollectionExtensions
             var googleOAuth = provider.GetRequiredService<RegistroCx.Helpers._0Auth.IGoogleOAuthService>();
             var calendarService = provider.GetRequiredService<IGoogleCalendarService>();
             var learningService = provider.GetRequiredService<UserLearningService>();
-            return new AppointmentConfirmationService(userRepo, appointmentRepo, anesthesiologistRepo, googleOAuth, calendarService, learningService);
+            var equipoService = provider.GetRequiredService<EquipoService>();
+            return new AppointmentConfirmationService(userRepo, appointmentRepo, anesthesiologistRepo, googleOAuth, calendarService, learningService, equipoService);
         });
         services.AddScoped<AudioTranscriptionService>(provider =>
         {
@@ -214,7 +243,8 @@ public static class ServiceCollectionExtensions
         {
             var appointmentRepo = provider.GetRequiredService<IAppointmentRepository>();
             var userRepo = provider.GetRequiredService<IUserProfileRepository>();
-            return new ReportDataService(appointmentRepo, userRepo);
+            var equipoService = provider.GetRequiredService<EquipoService>();
+            return new ReportDataService(appointmentRepo, userRepo, equipoService);
         });
         services.AddScoped<ChartGeneratorService>();
         services.AddScoped<PdfGeneratorService>();

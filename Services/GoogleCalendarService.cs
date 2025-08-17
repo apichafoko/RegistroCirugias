@@ -31,6 +31,10 @@ public class GoogleCalendarService : IGoogleCalendarService
     {
         return await ExecuteWithAuthRetryAsync(chatId, async calendarService =>
         {
+            // Obtener zona horaria del usuario
+            var userProfile = await _userRepo.GetAsync(chatId, ct);
+            var userTimeZone = userProfile?.TimeZone ?? "America/Argentina/Buenos_Aires";
+            
             // Crear el evento
             var calendarEvent = new Event
             {
@@ -39,13 +43,13 @@ public class GoogleCalendarService : IGoogleCalendarService
                 Location = appointment.Lugar,
                 Start = new EventDateTime
                 {
-                    DateTimeDateTimeOffset = new DateTimeOffset(appointment.FechaHora ?? DateTime.Now),
-                    TimeZone = "America/Argentina/Buenos_Aires" // Ajustar según tu zona horaria
+                    DateTimeDateTimeOffset = CreateUserDateTime(appointment.FechaHora ?? DateTime.Now, userTimeZone),
+                    TimeZone = userTimeZone
                 },
                 End = new EventDateTime
                 {
-                    DateTimeDateTimeOffset = new DateTimeOffset(appointment.FechaHora?.AddHours(2) ?? DateTime.Now.AddHours(2)), // Duración estimada de 2 horas
-                    TimeZone = "America/Argentina/Buenos_Aires"
+                    DateTimeDateTimeOffset = CreateUserDateTime(appointment.FechaHora?.AddHours(2) ?? DateTime.Now.AddHours(2), userTimeZone), // Duración estimada de 2 horas
+                    TimeZone = userTimeZone
                 },
                 Reminders = new Event.RemindersData
                 {
@@ -254,6 +258,27 @@ Evento creado automáticamente por RegistroCx Bot";
         {
             Console.WriteLine($"[CALENDAR] ❌ Error deleting event {eventId}: {ex.Message}");
             throw;
+        }
+    }
+
+    /// <summary>
+    /// Crea un DateTimeOffset interpretando la fecha como hora de la zona horaria especificada
+    /// </summary>
+    private static DateTimeOffset CreateUserDateTime(DateTime dateTime, string timeZoneId)
+    {
+        try
+        {
+            // Obtener la zona horaria del usuario
+            var userTimeZone = TimeZoneInfo.FindSystemTimeZoneById(timeZoneId);
+            
+            // Crear DateTimeOffset especificando que la fecha representa hora del usuario
+            return new DateTimeOffset(dateTime, userTimeZone.GetUtcOffset(dateTime));
+        }
+        catch (TimeZoneNotFoundException)
+        {
+            // Si la zona horaria no es válida, usar Argentina como fallback
+            var fallbackTimeZone = TimeZoneInfo.FindSystemTimeZoneById("America/Argentina/Buenos_Aires");
+            return new DateTimeOffset(dateTime, fallbackTimeZone.GetUtcOffset(dateTime));
         }
     }
 }

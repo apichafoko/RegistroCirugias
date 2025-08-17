@@ -47,18 +47,20 @@ public class AppointmentRepository : IAppointmentRepository
         return conn;
     }
 
-    public async Task<long> SaveAsync(Appointment appointment, long chatId, CancellationToken ct)
+    // Método principal con equipo_id y chat_id para tracking
+    public async Task<long> SaveAsync(Appointment appointment, int equipoId, CancellationToken ct)
     {
         const string sql = @"
             INSERT INTO appointments 
-                (chat_id, google_email, fecha_hora, lugar, cirujano, cirugia, cantidad, anestesiologo, calendar_event_id, calendar_synced_at, reminder_sent_at, created_at)
+                (equipo_id, chat_id, google_email, fecha_hora, lugar, cirujano, cirugia, cantidad, anestesiologo, calendar_event_id, calendar_synced_at, reminder_sent_at, created_at)
             VALUES 
-                (@ChatId, @GoogleEmail, @FechaHora, @Lugar, @Cirujano, @Cirugia, @Cantidad, @Anestesiologo, @CalendarEventId, @CalendarSyncedAt, @ReminderSentAt, now())
+                (@EquipoId, @ChatId, @GoogleEmail, @FechaHora, @Lugar, @Cirujano, @Cirugia, @Cantidad, @Anestesiologo, @CalendarEventId, @CalendarSyncedAt, @ReminderSentAt, now())
             RETURNING id;";
 
         var parameters = new
         {
-            ChatId = chatId,
+            EquipoId = equipoId,
+            ChatId = appointment.ChatId, // Para tracking del miembro que creó el appointment
             GoogleEmail = appointment.GoogleEmail,
             FechaHora = appointment.FechaHora,
             Lugar = appointment.Lugar,
@@ -74,20 +76,31 @@ public class AppointmentRepository : IAppointmentRepository
         await using var conn = await OpenAsync(ct);
         var id = await conn.QuerySingleAsync<long>(
             new CommandDefinition(sql, parameters, cancellationToken: ct));
+        
+        appointment.Id = id;
+        appointment.EquipoId = equipoId;
         return id;
+    }
+
+    // Método de compatibilidad temporal (requiere resolver chatId a equipoId)
+    public Task<long> SaveAsync(Appointment appointment, long chatId, CancellationToken ct)
+    {
+        // NOTA: Este método requiere que se inyecte EquipoService para resolver chatId -> equipoId
+        // Por ahora, lanzar excepción indicando que debe usarse el método con equipoId
+        throw new NotSupportedException(
+            "Este método requiere migración. Use SaveAsync(appointment, equipoId, ct) en su lugar. " +
+            "Para obtener equipoId desde chatId, use EquipoService.ObtenerPrimerEquipoIdPorChatIdAsync()");
     }
 
     public async Task<Appointment?> GetByIdAsync(long id, CancellationToken ct)
     {
         const string sql = @"
-            SELECT id, chat_id, google_email, fecha_hora, lugar, cirujano, cirugia, cantidad, anestesiologo, calendar_event_id, calendar_synced_at, reminder_sent_at, created_at
+            SELECT id, equipo_id, chat_id, google_email, fecha_hora, lugar, cirujano, cirugia, cantidad, anestesiologo, calendar_event_id, calendar_synced_at, reminder_sent_at, created_at
             FROM appointments 
             WHERE id = @id;";
 
         await using var conn = await OpenAsync(ct);
         
-        // Note: We'll need to map the result to an Appointment object
-        // This is a simplified version - you may need to adjust based on your Appointment model
         var result = await conn.QueryFirstOrDefaultAsync(
             new CommandDefinition(sql, new { id }, cancellationToken: ct));
 
@@ -96,7 +109,8 @@ public class AppointmentRepository : IAppointmentRepository
         return new Appointment
         {
             Id = result.id,
-            ChatId = result.chat_id,
+            EquipoId = result.equipo_id,
+            ChatId = result.chat_id, // Para tracking
             GoogleEmail = result.google_email,
             FechaHora = result.fecha_hora,
             Lugar = result.lugar,
@@ -132,36 +146,7 @@ public class AppointmentRepository : IAppointmentRepository
             new CommandDefinition(sql, new { appointmentId, eventId }, cancellationToken: ct));
     }
 
-    public async Task<List<Appointment>> GetPendingCalendarSyncAsync(long chatId, CancellationToken ct)
-    {
-        const string sql = @"
-            SELECT id, chat_id, google_email, fecha_hora, lugar, cirujano, cirugia, cantidad, anestesiologo, 
-                   calendar_event_id, calendar_synced_at, created_at
-            FROM appointments 
-            WHERE chat_id = @chatId 
-              AND calendar_event_id IS NULL 
-              AND fecha_hora > now()
-            ORDER BY fecha_hora ASC;";
-
-        await using var conn = await OpenAsync(ct);
-        var results = await conn.QueryAsync(
-            new CommandDefinition(sql, new { chatId }, cancellationToken: ct));
-
-        return results.Select(result => new Appointment
-        {
-            Id = result.id,
-            ChatId = result.chat_id,
-            GoogleEmail = result.google_email,
-            FechaHora = result.fecha_hora,
-            Lugar = result.lugar,
-            Cirujano = result.cirujano,
-            Cirugia = result.cirugia,
-            Cantidad = result.cantidad,
-            Anestesiologo = result.anestesiologo,
-            CalendarEventId = result.calendar_event_id,
-            CalendarSyncedAt = result.calendar_synced_at
-        }).ToList();
-    }
+    // Este método se mueve a sección de compatibilidad al final del archivo
 
     public async Task<List<Appointment>> GetAppointmentsNeedingRemindersAsync(CancellationToken ct)
     {
@@ -207,88 +192,13 @@ public class AppointmentRepository : IAppointmentRepository
             new CommandDefinition(sql, new { appointmentId }, cancellationToken: ct));
     }
 
-    public async Task<List<Appointment>> GetAppointmentsByDateRangeAsync(string googleEmail, DateTime startDate, DateTime endDate, CancellationToken ct)
-    {
-        Console.WriteLine($"[APPOINTMENT-REPO] Querying appointments for email: '{googleEmail}', from {startDate:yyyy-MM-dd} to {endDate:yyyy-MM-dd}");
-        
-        const string sql = @"
-            SELECT id AS Id,
-                   chat_id AS ChatId,
-                   google_email AS GoogleEmail,
-                   fecha_hora AS FechaHora,
-                   lugar AS Lugar,
-                   cirujano AS Cirujano,
-                   cirugia AS Cirugia,
-                   cantidad AS Cantidad,
-                   anestesiologo AS Anestesiologo,
-                   calendar_event_id AS CalendarEventId,
-                   calendar_synced_at AS CalendarSyncedAt,
-                   reminder_sent_at AS ReminderSentAt
-            FROM appointments 
-            WHERE google_email = @googleEmail 
-              AND fecha_hora >= @startDate 
-              AND fecha_hora <= @endDate
-            ORDER BY fecha_hora";
-
-        await using var conn = await OpenAsync(ct);
-        var appointments = await conn.QueryAsync<Appointment>(
-            new CommandDefinition(sql, new { googleEmail, startDate, endDate }, cancellationToken: ct));
-            
-        Console.WriteLine($"[APPOINTMENT-REPO] Found {appointments.Count()} appointments for email '{googleEmail}' in date range");
-        
-        return appointments.ToList();
-    }
-
-    public async Task<List<Appointment>> GetAppointmentsForWeekAsync(string googleEmail, DateTime weekStartDate, CancellationToken ct)
-    {
-        var weekEndDate = weekStartDate.AddDays(6).Date.AddDays(1).AddTicks(-1); // Final del día
-        return await GetAppointmentsByDateRangeAsync(googleEmail, weekStartDate, weekEndDate, ct);
-    }
-
-    public async Task<List<Appointment>> GetAppointmentsForMonthAsync(string googleEmail, int month, int year, CancellationToken ct)
-    {
-        var startDate = new DateTime(year, month, 1);
-        var endDate = startDate.AddMonths(1).AddTicks(-1);
-        return await GetAppointmentsByDateRangeAsync(googleEmail, startDate, endDate, ct);
-    }
-
-    public async Task<List<Appointment>> GetAppointmentsForYearAsync(string googleEmail, int year, CancellationToken ct)
-    {
-        var startDate = new DateTime(year, 1, 1);
-        var endDate = new DateTime(year, 12, 31, 23, 59, 59);
-        return await GetAppointmentsByDateRangeAsync(googleEmail, startDate, endDate, ct);
-    }
-
-    public async Task<List<Appointment>> GetByUserAndDateRangeAsync(long chatId, DateTime startDate, DateTime endDate, CancellationToken ct = default)
-    {
-        using var conn = await OpenAsync(ct);
-        
-        const string sql = @"
-            SELECT id, chat_id, fecha_hora, lugar, cirujano, cirugia, cantidad, anestesiologo, 
-                   calendar_event_id, calendar_synced_at, reminder_sent_at, created_at, updated_at
-            FROM appointments 
-            WHERE chat_id = @chatId 
-              AND fecha_hora >= @startDate 
-              AND fecha_hora <= @endDate
-            ORDER BY fecha_hora ASC";
-
-        var results = await conn.QueryAsync<dynamic>(sql, new { chatId, startDate, endDate });
-        
-        return results.Select(r => new Appointment
-        {
-            Id = r.id,
-            ChatId = r.chat_id,
-            FechaHora = r.fecha_hora,
-            Lugar = r.lugar,
-            Cirujano = r.cirujano,
-            Cirugia = r.cirugia,
-            Cantidad = r.cantidad,
-            Anestesiologo = r.anestesiologo,
-            CalendarEventId = r.calendar_event_id,
-            CalendarSyncedAt = r.calendar_synced_at,
-            ReminderSentAt = r.reminder_sent_at
-        }).ToList();
-    }
+    // Métodos movidos a sección de compatibilidad al final del archivo
+    // GetAppointmentsByDateRangeAsync(string googleEmail...)
+    // GetAppointmentsForWeekAsync(string googleEmail...)  
+    // GetAppointmentsForMonthAsync(string googleEmail...)
+    // GetAppointmentsForYearAsync(string googleEmail...)
+    
+    // Métodos antiguos eliminados - ver sección de compatibilidad al final
 
     public async Task UpdateAsync(long appointmentId, ModificationRequest changes, CancellationToken ct = default)
     {
@@ -350,6 +260,181 @@ public class AppointmentRepository : IAppointmentRepository
             await conn.ExecuteAsync(sql, parameters);
         }
     }
+
+    #region Métodos con equipo_id
+
+    public async Task<List<Appointment>> GetPendingCalendarSyncAsync(int equipoId, CancellationToken ct)
+    {
+        const string sql = @"
+            SELECT id, equipo_id, chat_id, google_email, fecha_hora, lugar, cirujano, cirugia, cantidad, anestesiologo, calendar_event_id, calendar_synced_at, reminder_sent_at, created_at
+            FROM appointments 
+            WHERE equipo_id = @equipoId AND calendar_event_id IS NULL
+            ORDER BY fecha_hora";
+
+        await using var conn = await OpenAsync(ct);
+        var results = await conn.QueryAsync(sql, new { equipoId });
+        
+        return results.Select(r => new Appointment
+        {
+            Id = r.id,
+            EquipoId = r.equipo_id,
+            ChatId = r.chat_id,
+            GoogleEmail = r.google_email,
+            FechaHora = r.fecha_hora,
+            Lugar = r.lugar,
+            Cirujano = r.cirujano,
+            Cirugia = r.cirugia,
+            Cantidad = r.cantidad,
+            Anestesiologo = r.anestesiologo,
+            CalendarEventId = r.calendar_event_id,
+            CalendarSyncedAt = r.calendar_synced_at,
+            ReminderSentAt = r.reminder_sent_at
+        }).ToList();
+    }
+
+    public async Task<List<Appointment>> GetByEquipoAndDateRangeAsync(int equipoId, DateTime startDate, DateTime endDate, CancellationToken ct = default)
+    {
+        const string sql = @"
+            SELECT id, equipo_id, chat_id, google_email, fecha_hora, lugar, cirujano, cirugia, cantidad, anestesiologo, calendar_event_id, calendar_synced_at, reminder_sent_at, created_at
+            FROM appointments 
+            WHERE equipo_id = @equipoId 
+              AND fecha_hora >= @startDate 
+              AND fecha_hora <= @endDate
+            ORDER BY fecha_hora";
+
+        await using var conn = await OpenAsync(ct);
+        var results = await conn.QueryAsync(sql, new { equipoId, startDate, endDate });
+        
+        return results.Select(r => new Appointment
+        {
+            Id = r.id,
+            EquipoId = r.equipo_id,
+            ChatId = r.chat_id,
+            GoogleEmail = r.google_email,
+            FechaHora = r.fecha_hora,
+            Lugar = r.lugar,
+            Cirujano = r.cirujano,
+            Cirugia = r.cirugia,
+            Cantidad = r.cantidad,
+            Anestesiologo = r.anestesiologo,
+            CalendarEventId = r.calendar_event_id,
+            CalendarSyncedAt = r.calendar_synced_at,
+            ReminderSentAt = r.reminder_sent_at
+        }).ToList();
+    }
+
+    public async Task<List<Appointment>> GetAppointmentsByDateRangeAsync(int equipoId, DateTime startDate, DateTime endDate, CancellationToken ct)
+    {
+        return await GetByEquipoAndDateRangeAsync(equipoId, startDate, endDate, ct);
+    }
+
+    public async Task<List<Appointment>> GetAppointmentsForWeekAsync(int equipoId, DateTime weekStartDate, CancellationToken ct)
+    {
+        var endDate = weekStartDate.AddDays(7);
+        return await GetByEquipoAndDateRangeAsync(equipoId, weekStartDate, endDate, ct);
+    }
+
+    public async Task<List<Appointment>> GetAppointmentsForMonthAsync(int equipoId, int month, int year, CancellationToken ct)
+    {
+        var startDate = new DateTime(year, month, 1);
+        var endDate = startDate.AddMonths(1).AddDays(-1);
+        return await GetByEquipoAndDateRangeAsync(equipoId, startDate, endDate, ct);
+    }
+
+    public async Task<List<Appointment>> GetAppointmentsForYearAsync(int equipoId, int year, CancellationToken ct)
+    {
+        var startDate = new DateTime(year, 1, 1);
+        var endDate = new DateTime(year, 12, 31);
+        return await GetByEquipoAndDateRangeAsync(equipoId, startDate, endDate, ct);
+    }
+
+    #endregion
+
+    #region Métodos de compatibilidad temporal (lanzar excepciones indicando migración)
+
+    public Task<List<Appointment>> GetPendingCalendarSyncAsync(long chatId, CancellationToken ct)
+    {
+        throw new NotSupportedException(
+            "Este método requiere migración. Use GetPendingCalendarSyncAsync(equipoId, ct) en su lugar. " +
+            "Para obtener equipoId desde chatId, use EquipoService.ObtenerPrimerEquipoIdPorChatIdAsync()");
+    }
+
+    public Task<List<Appointment>> GetAppointmentsByDateRangeAsync(string googleEmail, DateTime startDate, DateTime endDate, CancellationToken ct)
+    {
+        throw new NotSupportedException(
+            "Este método requiere migración. Use GetAppointmentsByDateRangeAsync(equipoId, startDate, endDate, ct) en su lugar.");
+    }
+
+    public Task<List<Appointment>> GetAppointmentsForWeekAsync(string googleEmail, DateTime weekStartDate, CancellationToken ct)
+    {
+        throw new NotSupportedException(
+            "Este método requiere migración. Use GetAppointmentsForWeekAsync(equipoId, weekStartDate, ct) en su lugar.");
+    }
+
+    public Task<List<Appointment>> GetAppointmentsForMonthAsync(string googleEmail, int month, int year, CancellationToken ct)
+    {
+        throw new NotSupportedException(
+            "Este método requiere migración. Use GetAppointmentsForMonthAsync(equipoId, month, year, ct) en su lugar.");
+    }
+
+    public Task<List<Appointment>> GetAppointmentsForYearAsync(string googleEmail, int year, CancellationToken ct)
+    {
+        throw new NotSupportedException(
+            "Este método requiere migración. Use GetAppointmentsForYearAsync(equipoId, year, ct) en su lugar.");
+    }
+
+    public Task<List<Appointment>> GetByUserAndDateRangeAsync(long chatId, DateTime startDate, DateTime endDate, CancellationToken ct = default)
+    {
+        throw new NotSupportedException(
+            "Este método requiere migración. Use GetByEquipoAndDateRangeAsync(equipoId, startDate, endDate, ct) en su lugar. " +
+            "Para obtener equipoId desde chatId, use EquipoService.ObtenerPrimerEquipoIdPorChatIdAsync()");
+    }
+
+    #endregion
+
+    #region Métodos de migración
+
+    public async Task MigrateAppointmentsToEquipoAsync(long chatId, int equipoId, CancellationToken ct = default)
+    {
+        const string sql = @"
+            UPDATE appointments 
+            SET equipo_id = @equipoId 
+            WHERE chat_id = @chatId AND equipo_id IS NULL";
+
+        await using var conn = await OpenAsync(ct);
+        await conn.ExecuteAsync(sql, new { chatId, equipoId });
+    }
+
+    public async Task<List<Appointment>> GetAppointmentsWithoutEquipoAsync(CancellationToken ct = default)
+    {
+        const string sql = @"
+            SELECT id, equipo_id, chat_id, google_email, fecha_hora, lugar, cirujano, cirugia, cantidad, anestesiologo, calendar_event_id, calendar_synced_at, reminder_sent_at, created_at
+            FROM appointments 
+            WHERE equipo_id IS NULL
+            ORDER BY fecha_hora";
+
+        await using var conn = await OpenAsync(ct);
+        var results = await conn.QueryAsync(sql);
+        
+        return results.Select(r => new Appointment
+        {
+            Id = r.id,
+            EquipoId = r.equipo_id,
+            ChatId = r.chat_id,
+            GoogleEmail = r.google_email,
+            FechaHora = r.fecha_hora,
+            Lugar = r.lugar,
+            Cirujano = r.cirujano,
+            Cirugia = r.cirugia,
+            Cantidad = r.cantidad,
+            Anestesiologo = r.anestesiologo,
+            CalendarEventId = r.calendar_event_id,
+            CalendarSyncedAt = r.calendar_synced_at,
+            ReminderSentAt = r.reminder_sent_at
+        }).ToList();
+    }
+
+    #endregion
 }
 
 /*

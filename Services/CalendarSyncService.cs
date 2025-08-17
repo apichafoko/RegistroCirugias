@@ -13,13 +13,16 @@ public class CalendarSyncService
 {
     private readonly IAppointmentRepository _appointmentRepo;
     private readonly IGoogleCalendarService _calendarService;
+    private readonly EquipoService _equipoService;
 
     public CalendarSyncService(
         IAppointmentRepository appointmentRepo, 
-        IGoogleCalendarService calendarService)
+        IGoogleCalendarService calendarService,
+        EquipoService equipoService)
     {
         _appointmentRepo = appointmentRepo;
         _calendarService = calendarService;
+        _equipoService = equipoService;
     }
 
     /// <summary>
@@ -31,12 +34,15 @@ public class CalendarSyncService
         {
             Console.WriteLine($"[CALENDAR-SYNC] Starting sync for chat {chatId}");
             
+            // Resolver chatId a equipoId para el nuevo sistema de equipos
+            var equipoId = await _equipoService.ObtenerPrimerEquipoIdPorChatIdAsync(chatId, ct);
+            
             // Obtener appointments que no tienen calendar_event_id
-            var pendingAppointments = await _appointmentRepo.GetPendingCalendarSyncAsync(chatId, ct);
+            var pendingAppointments = await _appointmentRepo.GetPendingCalendarSyncAsync(equipoId, ct);
             
             if (pendingAppointments.Count == 0)
             {
-                Console.WriteLine($"[CALENDAR-SYNC] No pending appointments found for chat {chatId}");
+                Console.WriteLine($"[CALENDAR-SYNC] No pending appointments found for team {equipoId}");
                 return 0;
             }
 

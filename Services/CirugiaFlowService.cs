@@ -75,6 +75,9 @@ public class CirugiaFlowService
     private readonly ICacheService _cache;
     private readonly IQuickEditService _quickEdit;
     private readonly IConversationContextManager _contextManager;
+    
+    // Sistema de equipos
+    private readonly EquipoService _equipoService;
 
     public CirugiaFlowService(
         LLMOpenAIAssistant llm, 
@@ -94,7 +97,8 @@ public class CirugiaFlowService
         IParsingAnalyticsService analytics,
         ICacheService cache,
         IQuickEditService quickEdit,
-        IConversationContextManager contextManager)
+        IConversationContextManager contextManager,
+        EquipoService equipoService)
     {
         _llm = llm;
         _pending = pending;
@@ -109,6 +113,7 @@ public class CirugiaFlowService
         _cache = cache;
         _quickEdit = quickEdit;
         _contextManager = contextManager;
+        _equipoService = equipoService;
         _stateManager = new FlowStateManager(_pending);
         _messageHandler = new FlowMessageHandler(oauthService, userRepo, calendarSync, appointmentRepo, reportService, quickEdit);
         _wizardHandler = new FlowWizardHandler(anesthesiologistSearchService, userRepo, analytics, quickEdit);

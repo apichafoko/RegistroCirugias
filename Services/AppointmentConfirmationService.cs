@@ -18,6 +18,7 @@ public class AppointmentConfirmationService
     private readonly IGoogleOAuthService _googleOAuth;
     private readonly IGoogleCalendarService _calendarService;
     private readonly UserLearningService? _learningService;
+    private readonly EquipoService _equipoService;
 
     public AppointmentConfirmationService(
         IUserProfileRepository userRepo,
@@ -25,7 +26,8 @@ public class AppointmentConfirmationService
         IAnesthesiologistRepository anesthesiologistRepo,
         IGoogleOAuthService googleOAuth,
         IGoogleCalendarService calendarService,
-        UserLearningService? learningService = null)
+        UserLearningService? learningService = null,
+        EquipoService? equipoService = null)
     {
         _userRepo = userRepo;
         _appointmentRepo = appointmentRepo;
@@ -33,6 +35,7 @@ public class AppointmentConfirmationService
         _googleOAuth = googleOAuth;
         _calendarService = calendarService;
         _learningService = learningService;
+        _equipoService = equipoService ?? throw new ArgumentNullException(nameof(equipoService));
     }
 
     public async Task<bool> ProcessConfirmationAsync(
@@ -127,9 +130,12 @@ public class AppointmentConfirmationService
             var userProfile = await _userRepo.GetOrCreateAsync(chatId, ct);
             appt.GoogleEmail = userProfile.GoogleEmail;
             
-            var appointmentId = await _appointmentRepo.SaveAsync(appt, chatId, ct);
+            // Resolver chatId a equipoId para el nuevo sistema de equipos
+            var equipoId = await _equipoService.ObtenerPrimerEquipoIdPorChatIdAsync(chatId, ct);
             
-            Console.WriteLine($"[DB] ✅ Appointment saved with ID: {appointmentId} (GoogleEmail: {appt.GoogleEmail})");
+            var appointmentId = await _appointmentRepo.SaveAsync(appt, equipoId, ct);
+            
+            Console.WriteLine($"[DB] ✅ Appointment saved with ID: {appointmentId} (EquipoId: {equipoId}, GoogleEmail: {appt.GoogleEmail})");
             return appointmentId;
         }
         catch (Exception ex)

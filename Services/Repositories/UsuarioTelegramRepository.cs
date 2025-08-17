@@ -9,8 +9,11 @@ using RegistroCx.Domain;
 namespace RegistroCx.Services.Repositories;
 
 /// <summary>
-/// Repositorio para manejar datos específicos de usuarios de Telegram
+/// OBSOLETO: Esta clase ha sido migrada a UserProfileRepository.
+/// Los datos de Telegram ahora se manejan directamente en UserProfile.
+/// Use UserProfileRepository en su lugar.
 /// </summary>
+[Obsolete("UsuarioTelegramRepository ha sido migrado a UserProfileRepository. Use UserProfileRepository en su lugar.", true)]
 public class UsuarioTelegramRepository : IUsuarioTelegramRepository
 {
     private readonly string _connString;

@@ -5,8 +5,11 @@ using RegistroCx.Domain;
 namespace RegistroCx.Services.Repositories;
 
 /// <summary>
-/// Interfaz para el repositorio de usuarios de Telegram
+/// OBSOLETO: Esta interfaz ha sido migrada a IUserProfileRepository.
+/// Los datos de Telegram ahora se manejan directamente en UserProfile.
+/// Use IUserProfileRepository en su lugar.
 /// </summary>
+[Obsolete("IUsuarioTelegramRepository ha sido migrado a IUserProfileRepository. Use IUserProfileRepository en su lugar.", true)]
 public interface IUsuarioTelegramRepository
 {
     /// <summary>

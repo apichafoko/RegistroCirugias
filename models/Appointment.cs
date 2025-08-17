@@ -5,7 +5,8 @@ namespace RegistroCx.Models;
 public class Appointment
 {
     public long Id { get; set; }
-    public long? ChatId { get; set; }
+    public long? ChatId { get; set; } // Mantener para compatibilidad temporal
+    public int? EquipoId { get; set; } // Nueva relación con equipos
     public string? GoogleEmail { get; set; } // Para reportes compartidos por equipo
     public DateTime? Fecha { get; set; }
     public string? Lugar { get; set; }

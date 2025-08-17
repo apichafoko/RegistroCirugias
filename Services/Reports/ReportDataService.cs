@@ -13,60 +13,44 @@ public class ReportDataService
 {
     private readonly IAppointmentRepository _appointmentRepo;
     private readonly IUserProfileRepository _userRepo;
+    private readonly EquipoService _equipoService;
 
-    public ReportDataService(IAppointmentRepository appointmentRepo, IUserProfileRepository userRepo)
+    public ReportDataService(IAppointmentRepository appointmentRepo, IUserProfileRepository userRepo, EquipoService equipoService)
     {
         _appointmentRepo = appointmentRepo;
         _userRepo = userRepo;
+        _equipoService = equipoService;
     }
 
     public async Task<ReportData> GenerateWeeklyReportDataAsync(long chatId, CancellationToken ct = default)
     {
-        // Obtener el GoogleEmail del usuario para consultas de equipo
-        var userProfile = await _userRepo.GetOrCreateAsync(chatId, ct);
-        var googleEmail = userProfile.GoogleEmail;
-        
-        if (string.IsNullOrWhiteSpace(googleEmail))
-        {
-            throw new InvalidOperationException("User must have a Google email configured to generate reports");
-        }
+        // Resolver chatId a equipoId para el nuevo sistema de equipos
+        var equipoId = await _equipoService.ObtenerPrimerEquipoIdPorChatIdAsync(chatId, ct);
 
         var period = ReportPeriod.CreateWeekly();
-        var appointments = await _appointmentRepo.GetAppointmentsForWeekAsync(googleEmail, period.StartDate, ct);
+        var appointments = await _appointmentRepo.GetAppointmentsForWeekAsync(equipoId, period.StartDate, ct);
         
         return await ProcessAppointmentsIntoReportData(appointments, period, chatId);
     }
 
     public async Task<ReportData> GenerateMonthlyReportDataAsync(long chatId, int month, int year, CancellationToken ct = default)
     {
-        // Obtener el GoogleEmail del usuario para consultas de equipo
-        var userProfile = await _userRepo.GetOrCreateAsync(chatId, ct);
-        var googleEmail = userProfile.GoogleEmail;
-        
-        if (string.IsNullOrWhiteSpace(googleEmail))
-        {
-            throw new InvalidOperationException("User must have a Google email configured to generate reports");
-        }
+        // Resolver chatId a equipoId para el nuevo sistema de equipos
+        var equipoId = await _equipoService.ObtenerPrimerEquipoIdPorChatIdAsync(chatId, ct);
 
         var period = ReportPeriod.CreateMonthly(month, year);
-        var appointments = await _appointmentRepo.GetAppointmentsForMonthAsync(googleEmail, month, year, ct);
+        var appointments = await _appointmentRepo.GetAppointmentsForMonthAsync(equipoId, month, year, ct);
         
         return await ProcessAppointmentsIntoReportData(appointments, period, chatId);
     }
 
     public async Task<ReportData> GenerateAnnualReportDataAsync(long chatId, int year, CancellationToken ct = default)
     {
-        // Obtener el GoogleEmail del usuario para consultas de equipo
-        var userProfile = await _userRepo.GetOrCreateAsync(chatId, ct);
-        var googleEmail = userProfile.GoogleEmail;
-        
-        if (string.IsNullOrWhiteSpace(googleEmail))
-        {
-            throw new InvalidOperationException("User must have a Google email configured to generate reports");
-        }
+        // Resolver chatId a equipoId para el nuevo sistema de equipos
+        var equipoId = await _equipoService.ObtenerPrimerEquipoIdPorChatIdAsync(chatId, ct);
 
         var period = ReportPeriod.CreateAnnual(year);
-        var appointments = await _appointmentRepo.GetAppointmentsForYearAsync(googleEmail, year, ct);
+        var appointments = await _appointmentRepo.GetAppointmentsForYearAsync(equipoId, year, ct);
         
         return await ProcessAppointmentsIntoReportData(appointments, period, chatId);
     }

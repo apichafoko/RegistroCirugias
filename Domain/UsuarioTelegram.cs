@@ -3,9 +3,11 @@ using System;
 namespace RegistroCx.Domain;
 
 /// <summary>
-/// Representa la información específica de un usuario de Telegram
-/// Almacenada en la tabla usuarios_telegram
+/// OBSOLETO: Esta clase ha sido migrada a UserProfile.
+/// Los datos de Telegram ahora se almacenan directamente en user_profiles.
+/// Use UserProfile en su lugar.
 /// </summary>
+[Obsolete("UsuarioTelegram ha sido migrado a UserProfile. Use UserProfile en su lugar.", true)]
 public class UsuarioTelegram
 {
     public int Id { get; set; }

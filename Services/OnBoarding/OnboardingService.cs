@@ -17,18 +17,15 @@ namespace RegistroCx.Services.Onboarding
     public class OnboardingService : IOnboardingService
     {
         private readonly IUserProfileRepository _repo;
-        private readonly IUsuarioTelegramRepository _telegramRepo;
         private readonly IGoogleOAuthService _oauth;
         private readonly ILogger<OnboardingService> _logger;
 
         public OnboardingService(
             IUserProfileRepository repo,
-            IUsuarioTelegramRepository telegramRepo,
             IGoogleOAuthService oauth,
             ILogger<OnboardingService> logger)
         {
             _repo = repo;
-            _telegramRepo = telegramRepo;
             _oauth = oauth;
             _logger = logger;
         }
@@ -55,7 +52,10 @@ namespace RegistroCx.Services.Onboarding
             UserProfile? profile = null;
             if (!string.IsNullOrWhiteSpace(phoneFromContact))
             {
-                var normalizedPhone = NormalizarTelefono(phoneFromContact);
+                // Usar el servicio de validación para normalizar el teléfono compartido
+                var validation = PhoneValidationService.ValidateAndNormalize(phoneFromContact, null, languageCode);
+                var normalizedPhone = validation.NormalizedPhone ?? NormalizarTelefono(phoneFromContact); // Fallback al método antiguo
+                
                 var existingProfile = await _repo.FindByPhoneAsync(normalizedPhone, ct);
                 if (existingProfile != null)
                 {
@@ -90,8 +90,11 @@ namespace RegistroCx.Services.Onboarding
                     //_logger.LogInformation("[ONBOARDING] Updated profile phone to: {phone}", normalizedPhone);
                 //}
                 
+                // Detectar zona horaria del usuario
+                var detectedTimeZone = TimeZoneDetectionService.DetectTimeZone(languageCode);
+                
                 // Actualizar datos de Telegram solo cuando hay teléfono compartido
-                await _telegramRepo.UpdateTelegramDataByPhoneAsync(chatId, telegramUserId, firstName, username, normalizedPhone, ct);
+                await _repo.UpdateTelegramDataByPhoneAsync(chatId, telegramUserId, firstName, username, normalizedPhone, detectedTimeZone, ct);
             }
             else
             {
@@ -128,8 +131,12 @@ namespace RegistroCx.Services.Onboarding
             // compartir teléfono
             if (!string.IsNullOrWhiteSpace(phoneFromContact))
             {
-                var normalizedPhone = NormalizarTelefono(phoneFromContact);
-                _logger.LogInformation("[PHONE-SHARING] Processing phone: {phone}, normalized: {normalizedPhone}", phoneFromContact, normalizedPhone);
+                // Usar el servicio de validación para el teléfono compartido
+                var validation = PhoneValidationService.ValidateAndNormalize(phoneFromContact, profile?.TimeZone, languageCode);
+                var normalizedPhone = validation.NormalizedPhone ?? NormalizarTelefono(phoneFromContact); // Fallback
+                
+                _logger.LogInformation("[PHONE-SHARING] Processing phone: {phone}, normalized: {normalizedPhone}, valid: {valid}", 
+                    phoneFromContact, normalizedPhone, validation.IsValid);
                 
                 // Asegurar que el perfil tenga el teléfono correcto
                 if (profile != null && profile.Phone != normalizedPhone)
@@ -139,8 +146,11 @@ namespace RegistroCx.Services.Onboarding
                     _logger.LogInformation("[PHONE-SHARING] Updated profile phone to: {phone}", normalizedPhone);
                 }
                 
-                // Actualizar usuarios_telegram buscando por teléfono primero
-                await _telegramRepo.UpdateTelegramDataByPhoneAsync(chatId, telegramUserId, firstName, username, normalizedPhone, ct);
+                // Detectar zona horaria del usuario
+                var detectedTimeZone = TimeZoneDetectionService.DetectTimeZone(languageCode);
+                
+                // Actualizar datos de Telegram buscando por teléfono primero
+                await _repo.UpdateTelegramDataByPhoneAsync(chatId, telegramUserId, firstName, username, normalizedPhone, detectedTimeZone, ct);
                 
                 // Como todos los usuarios ya existen con teléfono y email, verificar el estado
                 if (profile != null && profile.State == UserState.Ready)
@@ -195,10 +205,13 @@ namespace RegistroCx.Services.Onboarding
                             cancellationToken: ct);
                         return (true, profile);
                     }
-                    if (TryExtractPhone(rawText, out var phoneManual))
+                    // Validar y normalizar el teléfono ingresado
+                    var validation = PhoneValidationService.ValidateAndNormalize(rawText, profile?.TimeZone, languageCode);
+                    
+                    if (validation.IsValid && !string.IsNullOrEmpty(validation.NormalizedPhone))
                     {
                         // TELÉFONO ES 1:1 - Verificar si ya existe un usuario con ese teléfono
-                        var existingProfile = await _repo.FindByPhoneAsync(phoneManual, ct);
+                        var existingProfile = await _repo.FindByPhoneAsync(validation.NormalizedPhone, ct);
                         if (existingProfile != null && existingProfile.ChatId != chatId)
                         {
                             // Teléfono único: actualizar ChatId del perfil existente y datos de Telegram
@@ -206,28 +219,45 @@ namespace RegistroCx.Services.Onboarding
                             existingProfile.ChatId = chatId;
                             await UpdateTelegramData(existingProfile, telegramUserId, firstName, lastName, username, languageCode, ct);
                             
+                            var displayFormat = PhoneValidationService.FormatForDisplay(validation.NormalizedPhone);
                             await MessageSender.SendWithRetry(chatId,
                                 $"¡Hola {await GetTelegramDisplayName(existingProfile.ChatId ?? chatId, ct)}! 👋\n\n" +
-                                "Te reconocí por tu teléfono. ¡Qué bueno que estés acá!\n\n" +
+                                $"Te reconocí por tu teléfono <b>{displayFormat}</b>. ¡Qué bueno que estés acá!\n\n" +
                                 "¡Listo! 🎉 Ya está todo configurado.\n\nAhora podés mandarme los datos de tus cirugías y yo las agendo automáticamente en tu calendario.",
                                 replyMarkup: new ReplyKeyboardRemove(),
                                 cancellationToken: ct);
                             return (true, existingProfile);
                         }
                         
-                        profile.Phone = phoneManual;
-                        profile.State = UserState.NeedOAuth;
-                        await _repo.SaveAsync(profile, ct);
-                        await MessageSender.SendWithRetry(chatId,
-                            $"Perfecto ✅\n\nYa tengo tu email <b>{profile.GoogleEmail}</b> preconfigurado.\n\nAhora necesito que autorices tu calendario de Google para poder crear los eventos de las cirugías.\n\nEscribí <b>continuar</b> y te mando el enlace para autorizar:",
-                            replyMarkup: new ReplyKeyboardRemove(),
-                            cancellationToken: ct);
+                        if (profile != null)
+                        {
+                            profile.Phone = validation.NormalizedPhone;
+                            profile.State = UserState.NeedOAuth;
+                            await _repo.SaveAsync(profile, ct);
+                            
+                            var displayFormatNew = PhoneValidationService.FormatForDisplay(validation.NormalizedPhone);
+                            await MessageSender.SendWithRetry(chatId,
+                                $"Perfecto ✅ Teléfono guardado: <b>{displayFormatNew}</b>\n\nYa tengo tu email <b>{profile.GoogleEmail}</b> preconfigurado.\n\nAhora necesito que autorices tu calendario de Google para poder crear los eventos de las cirugías.\n\nEscribí <b>continuar</b> y te mando el enlace para autorizar:",
+                                replyMarkup: new ReplyKeyboardRemove(),
+                                cancellationToken: ct);
+                        }
                     }
                     else
                     {
-                        await PedirTelefono(bot, chatId, ct);
+                        // Error de validación: mostrar mensaje específico con sugerencias
+                        var errorMsg = validation.ErrorMessage ?? "Formato de teléfono inválido.";
+                        if (!string.IsNullOrEmpty(validation.SuggestedFormat))
+                        {
+                            errorMsg += $"\n\n💡 {validation.SuggestedFormat}";
+                        }
+                        if (!string.IsNullOrEmpty(validation.CountryDetected))
+                        {
+                            errorMsg += $"\n\n🌍 País detectado: {validation.CountryDetected}";
+                        }
+                        
+                        await MessageSender.SendWithRetry(chatId, errorMsg, cancellationToken: ct);
                     }
-                    return (true, profile);
+                    return (true, profile ?? new UserProfile { ChatId = chatId, State = UserState.NeedPhone });
 
 
                 case UserState.NeedOAuth:
@@ -324,6 +354,11 @@ Simplemente escribime los datos de tu cirugía en lenguaje natural. Yo entiendo 
     @"¡Hola! 👋 Soy el asistente de cirugías.
 
 Para empezar, necesito que compartas tu teléfono.
+
+📱 Podés usar el botón ""📱 Compartir mi teléfono"" o escribirlo manualmente.
+
+💡 <b>Ejemplo:</b> +5491160167172 (con código de país)
+
 Después te voy a ayudar paso a paso con todo lo demás.";
 
             await MessageSender.SendWithRetry(chatId, txt, replyMarkup: kb, cancellationToken: ct);
@@ -342,7 +377,7 @@ Después te voy a ayudar paso a paso con todo lo demás.";
             };
             return bot.SendMessage(
                 chatId,
-                "Necesito tu teléfono.\n\n📱 Podés usar el botón para compartirlo automáticamente o escribirlo manualmente.\n\n💡 **Formato:** +5491160167172 (con código de país)",
+                "Necesito tu teléfono.\n\n📱 Podés usar el botón \"📱 Compartir mi teléfono\" para compartirlo automáticamente o escribirlo manualmente.\n\n💡 <b>Ejemplo:</b> +5491160167172 (con código de país)",
                 replyMarkup: kb,
                 cancellationToken: ct);
         }
@@ -353,17 +388,7 @@ Después te voy a ayudar paso a paso con todo lo demás.";
             return digits.StartsWith("+") ? digits : "+" + digits;
         }
 
-        private static bool TryExtractPhone(string input, out string phone)
-        {
-            phone = "";
-            if (string.IsNullOrWhiteSpace(input)) return false;
-            var filtered = new string(input.Where(ch => char.IsDigit(ch) || ch == '+').ToArray());
-            if (!filtered.StartsWith("+") && filtered.StartsWith("54"))
-                filtered = "+" + filtered;
-            if (filtered.Length < 8) return false;
-            phone = filtered;
-            return true;
-        }
+        // Método TryExtractPhone removido - ahora usamos PhoneValidationService
 
 
         private static bool IsValidEmail(string s) =>
@@ -403,12 +428,17 @@ Después te voy a ayudar paso a paso con todo lo demás.";
         {
             if (telegramUserId.HasValue)
             {
-                await _telegramRepo.UpdateTelegramDataAsync(
+                // Detectar zona horaria del usuario
+                var detectedTimeZone = TimeZoneDetectionService.DetectTimeZone(languageCode);
+                
+                await _repo.UpdateTelegramDataAsync(
                     profile.ChatId ?? 0,
                     telegramUserId.Value,
                     firstName,
                     username,
                     profile.Phone, // ✅ Incluir teléfono del perfil
+                    null, // email
+                    detectedTimeZone,
                     ct: ct);
             }
         }
@@ -418,8 +448,8 @@ Después te voy a ayudar paso a paso con todo lo demás.";
         /// </summary>
         private async Task<string> GetTelegramDisplayName(long chatId, CancellationToken ct)
         {
-            var telegramUser = await _telegramRepo.GetByChatIdAsync(chatId, ct);
-            return telegramUser?.GetDisplayName() ?? "Usuario";
+            var userProfile = await _repo.GetAsync(chatId, ct);
+            return userProfile?.GetDisplayName() ?? "Usuario";
         }
 
         /// <summary>

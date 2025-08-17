@@ -61,6 +61,11 @@ public class UserProfileRepository : IUserProfileRepository
                                 google_refresh_token AS GoogleRefreshToken,
                                 google_token_expiry AS GoogleTokenExpiry,
                                 oauth_nonce  AS OAuthNonce,
+                                telegram_user_id AS TelegramUserId,
+                                telegram_first_name AS TelegramFirstName,
+                                telegram_username AS TelegramUsername,
+                                calendar_autorizado AS CalendarAutorizado,
+                                timezone     AS TimeZone,
                                 created_at   AS CreatedAt,
                                 updated_at   AS UpdatedAt
                             FROM user_profiles
@@ -110,7 +115,7 @@ public class UserProfileRepository : IUserProfileRepository
 
     public async Task SaveAsync(UserProfile profile, CancellationToken ct = default)
     {
-        profile.UpdatedUtc = DateTime.UtcNow;
+        profile.UpdatedAt = DateTime.UtcNow;
         const string upsert = @"
             INSERT INTO user_profiles
                 (chat_id, state, phone, google_email, google_access_token, google_refresh_token,
@@ -249,5 +254,82 @@ public class UserProfileRepository : IUserProfileRepository
         await using var conn = await OpenAsync(ct);
         await conn.ExecuteAsync(sql, new { chatId, access, refresh, expiry });
     }
+
+    #region Métodos de Telegram (migrados desde UsuarioTelegramRepository)
+
+    public async Task<UserProfile?> GetByTelegramIdAsync(long telegramId, CancellationToken ct = default)
+    {
+        const string sql = @"SELECT id           AS Id,
+                                chat_id      AS ChatId,
+                                state        AS State,
+                                phone        AS Phone,
+                                google_email AS GoogleEmail,
+                                google_access_token AS GoogleAccessToken,
+                                google_refresh_token AS GoogleRefreshToken,
+                                google_token_expiry AS GoogleTokenExpiry,
+                                oauth_nonce  AS OAuthNonce,
+                                telegram_user_id AS TelegramUserId,
+                                telegram_first_name AS TelegramFirstName,
+                                telegram_username AS TelegramUsername,
+                                calendar_autorizado AS CalendarAutorizado,
+                                timezone     AS TimeZone,
+                                created_at   AS CreatedAt,
+                                updated_at   AS UpdatedAt
+                            FROM user_profiles
+                            WHERE telegram_user_id = @telegramId";
+        await using var conn = await OpenAsync(ct);
+        return await conn.QueryFirstOrDefaultAsync<UserProfile>(new CommandDefinition(sql, new { telegramId }, cancellationToken: ct));
+    }
+
+    public async Task UpdateTelegramDataAsync(
+        long chatId,
+        long? telegramId,
+        string? nombre,
+        string? username,
+        string? telefono = null,
+        string? email = null,
+        string? timeZone = null,
+        CancellationToken ct = default)
+    {
+        const string sql = @"
+            UPDATE user_profiles
+            SET telegram_user_id = @telegramId,
+                telegram_first_name = @nombre,
+                telegram_username = @username,
+                phone = COALESCE(@telefono, phone),
+                google_email = COALESCE(@email, google_email),
+                timezone = COALESCE(@timeZone, timezone),
+                updated_at = now()
+            WHERE chat_id = @chatId";
+
+        await using var conn = await OpenAsync(ct);
+        await conn.ExecuteAsync(new CommandDefinition(sql, new { chatId, telegramId, nombre, username, telefono, email, timeZone }, cancellationToken: ct));
+    }
+
+    public async Task UpdateTelegramDataByPhoneAsync(
+        long chatId,
+        long? telegramId,
+        string? nombre,
+        string? username,
+        string telefono,
+        string? timeZone = null,
+        CancellationToken ct = default)
+    {
+        // Buscar primero por teléfono, luego por chat_id
+        const string sql = @"
+            UPDATE user_profiles
+            SET telegram_user_id = @telegramId,
+                telegram_first_name = @nombre,
+                telegram_username = @username,
+                chat_id = @chatId,
+                timezone = COALESCE(@timeZone, timezone),
+                updated_at = now()
+            WHERE phone = @telefono OR chat_id = @chatId";
+
+        await using var conn = await OpenAsync(ct);
+        await conn.ExecuteAsync(new CommandDefinition(sql, new { chatId, telegramId, nombre, username, telefono, timeZone }, cancellationToken: ct));
+    }
+
+    #endregion
 
 }

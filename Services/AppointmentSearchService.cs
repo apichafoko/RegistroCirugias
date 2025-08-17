@@ -14,10 +14,12 @@ namespace RegistroCx.Services
     public class AppointmentSearchService
     {
         private readonly IAppointmentRepository _appointmentRepo;
+        private readonly EquipoService _equipoService;
 
-        public AppointmentSearchService(IAppointmentRepository appointmentRepo)
+        public AppointmentSearchService(IAppointmentRepository appointmentRepo, EquipoService equipoService)
         {
             _appointmentRepo = appointmentRepo;
+            _equipoService = equipoService;
         }
 
         public async Task<AppointmentSearchResult> FindCandidatesAsync(
@@ -29,11 +31,14 @@ namespace RegistroCx.Services
             
             Console.WriteLine($"[SEARCH] Searching for: '{searchText}' for user {chatId}");
             
-            // Obtener appointments del usuario (últimos 30 días atrás y próximos 365 días adelante)
+            // Resolver chatId a equipoId para el nuevo sistema de equipos
+            var equipoId = await _equipoService.ObtenerPrimerEquipoIdPorChatIdAsync(chatId);
+            
+            // Obtener appointments del equipo (últimos 30 días atrás y próximos 365 días adelante)
             // Esto permite buscar cirugías futuras programadas para el próximo año
             var startDate = DateTime.Today.AddDays(-30);
             var endDate = DateTime.Today.AddDays(365);
-            var userAppointments = await _appointmentRepo.GetByUserAndDateRangeAsync(chatId, startDate, endDate);
+            var userAppointments = await _appointmentRepo.GetByEquipoAndDateRangeAsync(equipoId, startDate, endDate);
 
             Console.WriteLine($"[SEARCH] Found {userAppointments.Count()} appointments in date range {startDate:dd/MM/yyyy} - {endDate:dd/MM/yyyy}");
             

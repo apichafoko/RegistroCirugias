@@ -22,5 +22,24 @@ public interface IUserProfileRepository
     Task LinkChatIdByIdAsync(int profileId, long newChatId, CancellationToken ct = default);
     Task<UserProfile> CreateProfileCopyingEmailTokensAsync(UserProfile sourceProfile, long newChatId, CancellationToken ct = default);
 
+    // Métodos de Telegram (migrados desde IUsuarioTelegramRepository)
+    Task<UserProfile?> GetByTelegramIdAsync(long telegramId, CancellationToken ct = default);
+    Task UpdateTelegramDataAsync(
+        long chatId,
+        long? telegramId,
+        string? nombre,
+        string? username,
+        string? telefono = null,
+        string? email = null,
+        string? timeZone = null,
+        CancellationToken ct = default);
+    Task UpdateTelegramDataByPhoneAsync(
+        long chatId,
+        long? telegramId,
+        string? nombre,
+        string? username,
+        string telefono,
+        string? timeZone = null,
+        CancellationToken ct = default);
 
 }
