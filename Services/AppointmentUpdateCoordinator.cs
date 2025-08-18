@@ -25,6 +25,58 @@ namespace RegistroCx.Services
             _logger = logger;
         }
 
+        public async Task<bool> ExecuteDirectModificationAsync(
+            Appointment original, 
+            Appointment modified,
+            long chatId,
+            CancellationToken ct = default)
+        {
+            try
+            {
+                _logger.LogInformation("Executing direct modification for appointment {AppointmentId}", original.Id);
+
+                // 1. Actualizar en base de datos con los datos completos del appointment modificado
+                await _appointmentRepo.UpdateDirectAsync(original.Id, modified, ct);
+                
+                // 2. Obtener el appointment actualizado
+                var updatedAppointment = await _appointmentRepo.GetByIdAsync(original.Id, ct);
+                if (updatedAppointment == null)
+                {
+                    _logger.LogError("Failed to retrieve updated appointment {AppointmentId}", original.Id);
+                    return false;
+                }
+
+                // 3. Actualizar calendario Google si existe event_id
+                if (!string.IsNullOrEmpty(original.CalendarEventId))
+                {
+                    await UpdateGoogleCalendarEvent(updatedAppointment, original.CalendarEventId, ct);
+                }
+
+                // 4. Notificar anestesiólogo si cambió
+                if (original.Anestesiologo != modified.Anestesiologo)
+                {
+                    await NotifyAnesthesiologistChange(updatedAppointment, original.Anestesiologo, ct);
+                }
+
+                // 5. Confirmar al usuario
+                await SendDirectModificationConfirmation(original, updatedAppointment, chatId, ct);
+
+                _logger.LogInformation("Successfully executed direct modification for appointment {AppointmentId}", original.Id);
+                return true;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error executing direct modification for appointment {AppointmentId}", original.Id);
+                
+                // Enviar mensaje de error al usuario
+                await MessageSender.SendWithRetry(chatId,
+                    "❌ Hubo un error al actualizar la cirugía. Por favor, intenta nuevamente.",
+                    cancellationToken: ct);
+                
+                return false;
+            }
+        }
+
         public async Task<bool> ExecuteModificationAsync(
             Appointment original, 
             ModificationRequest changes,
@@ -122,6 +174,49 @@ namespace RegistroCx.Services
                 _logger.LogError(ex, "Error notifying anesthesiologist change for appointment {AppointmentId}", appointment.Id);
                 // No fallar toda la operación por un error de notificación
                 return Task.CompletedTask;
+            }
+        }
+
+        private async Task SendDirectModificationConfirmation(Appointment original, Appointment updated, long chatId, CancellationToken ct)
+        {
+            try
+            {
+                var message = "✅ *Cirugía actualizada exitosamente*\n\n";
+                
+                // Mostrar resumen de la cirugía actualizada
+                message += "📋 *Datos actualizados:*\n";
+                message += $"📅 Fecha: {updated.FechaHora?.ToString("dd/MM/yyyy") ?? "No definida"}\n";
+                message += $"🕒 Hora: {updated.FechaHora?.ToString("HH:mm") ?? "No definida"}\n";
+                message += $"📍 Lugar: {updated.Lugar ?? "No definido"}\n";
+                message += $"👨‍⚕️ Cirujano: {updated.Cirujano ?? "No definido"}\n";
+                message += $"🏥 Cirugía: {updated.Cirugia ?? "No definida"}\n";
+                message += $"🔢 Cantidad: {updated.Cantidad}\n";
+                
+                if (!string.IsNullOrEmpty(updated.Anestesiologo))
+                {
+                    message += $"💉 Anestesiólogo: {updated.Anestesiologo}\n";
+                }
+
+                // Agregar información sobre sincronización
+                if (!string.IsNullOrEmpty(updated.CalendarEventId))
+                {
+                    message += "\n📅 El calendario se actualizará automáticamente.";
+                }
+
+                if (original.Anestesiologo != updated.Anestesiologo)
+                {
+                    message += "\n📧 Se notificará al anestesiólogo sobre el cambio.";
+                }
+
+                await MessageSender.SendWithRetry(chatId, message, cancellationToken: ct);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error sending direct modification confirmation for appointment {AppointmentId}", updated.Id);
+                // Enviar mensaje genérico si falla el mensaje detallado
+                await MessageSender.SendWithRetry(chatId,
+                    "✅ Cirugía actualizada exitosamente.",
+                    cancellationToken: ct);
             }
         }
 

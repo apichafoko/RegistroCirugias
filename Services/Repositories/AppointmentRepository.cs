@@ -261,6 +261,35 @@ public class AppointmentRepository : IAppointmentRepository
         }
     }
 
+    public async Task UpdateDirectAsync(long appointmentId, Appointment modifiedAppointment, CancellationToken ct = default)
+    {
+        using var conn = await OpenAsync(ct);
+        
+        const string sql = @"
+            UPDATE appointments 
+            SET fecha_hora = @fechaHora,
+                lugar = @lugar,
+                cirujano = @cirujano,
+                cirugia = @cirugia,
+                cantidad = @cantidad,
+                anestesiologo = @anestesiologo,
+                notas = @notas,
+                updated_at = now()
+            WHERE id = @id";
+
+        var parameters = new DynamicParameters();
+        parameters.Add("id", appointmentId);
+        parameters.Add("fechaHora", modifiedAppointment.FechaHora);
+        parameters.Add("lugar", modifiedAppointment.Lugar);
+        parameters.Add("cirujano", modifiedAppointment.Cirujano);
+        parameters.Add("cirugia", modifiedAppointment.Cirugia);
+        parameters.Add("cantidad", modifiedAppointment.Cantidad);
+        parameters.Add("anestesiologo", modifiedAppointment.Anestesiologo);
+        parameters.Add("notas", modifiedAppointment.Notas);
+
+        await conn.ExecuteAsync(sql, parameters);
+    }
+
     #region Métodos con equipo_id
 
     public async Task<List<Appointment>> GetPendingCalendarSyncAsync(int equipoId, CancellationToken ct)

@@ -168,6 +168,34 @@ public class FlowLLMProcessor
         TryParseDateTimeFromLLM(dict, appt);
     }
 
+    /// <summary>
+    /// Aplica solo los campos que están presentes en el diccionario del LLM, preservando los valores existentes
+    /// Diseñado específicamente para modificaciones donde se deben mantener campos no mencionados
+    /// </summary>
+    private void ApplyOnlyProvidedFields(Appointment appt, Dictionary<string, string> dict)
+    {
+        // Solo aplicar campos que tienen valores válidos del LLM
+        // Los campos vacíos o faltantes en el dict NO se tocan
+        
+        if (dict.TryGetValue("lugar", out var lugar) && !string.IsNullOrWhiteSpace(lugar))
+            appt.Lugar = Capitalizador.CapitalizarSimple(lugar);
+        
+        if (dict.TryGetValue("cirujano", out var cirujano) && !string.IsNullOrWhiteSpace(cirujano))
+            appt.Cirujano = Capitalizador.CapitalizarSimple(cirujano);
+        
+        if ((dict.TryGetValue("cirugía", out var cirugia) || dict.TryGetValue("cirugia", out cirugia)) && !string.IsNullOrWhiteSpace(cirugia))
+            appt.Cirugia = Capitalizador.CapitalizarSimple(cirugia);
+        
+        if (dict.TryGetValue("cantidad", out var q) && int.TryParse(q, out var n))
+            appt.Cantidad = n;
+        
+        if (dict.TryGetValue("anestesiologo", out var anest) && !string.IsNullOrWhiteSpace(anest))
+            appt.Anestesiologo = Capitalizador.CapitalizarSimple(anest);
+
+        // Para fecha/hora - solo aplicar si se proporcionaron nuevos valores
+        TryParseDateTimeFromLLMSelective(dict, appt);
+    }
+
     private static void TryParseDateTimeFromLLM(Dictionary<string, string> dict, Appointment appt)
     {
         // Extraer valores del LLM
@@ -200,5 +228,79 @@ public class FlowLLMProcessor
 
         // Intentar completar la fecha/hora
         appt.TryCompletarFechaHora();
+    }
+
+    /// <summary>
+    /// Versión selectiva del parsing de fecha/hora que solo actualiza si se proporcionan nuevos valores
+    /// </summary>
+    private static void TryParseDateTimeFromLLMSelective(Dictionary<string, string> dict, Appointment appt)
+    {
+        bool hasNewDateInfo = false;
+        bool hasNewTimeInfo = false;
+
+        // Solo extraer valores si están presentes en el diccionario
+        if (dict.TryGetValue("dia", out var d) && int.TryParse(d, out var diaVal))
+        {
+            appt.DiaExtraido = diaVal;
+            hasNewDateInfo = true;
+        }
+        
+        if (dict.TryGetValue("mes", out var m) && int.TryParse(m, out var mesVal))
+        {
+            appt.MesExtraido = mesVal;
+            hasNewDateInfo = true;
+        }
+        
+        if (dict.TryGetValue("anio", out var y) && int.TryParse(y, out var anioVal))
+        {
+            appt.AnioExtraido = anioVal;
+            hasNewDateInfo = true;
+        }
+        
+        if (dict.TryGetValue("hora", out var h))
+        {
+            var horaText = h.Trim().ToLower().Replace("hs", "").Replace("h", "").Trim();
+            if (TimeSpan.TryParse(horaText, out var horaSpan))
+            {
+                appt.HoraExtraida = horaSpan.Hours;
+                appt.MinutoExtraido = horaSpan.Minutes;
+                hasNewTimeInfo = true;
+            }
+            else if (int.TryParse(horaText, out var horaInt) && horaInt >= 0 && horaInt <= 23)
+            {
+                appt.HoraExtraida = horaInt;
+                appt.MinutoExtraido = 0;
+                hasNewTimeInfo = true;
+            }
+        }
+        
+        if (dict.TryGetValue("minuto", out var min) && int.TryParse(min, out var minVal))
+        {
+            appt.MinutoExtraido = minVal;
+            hasNewTimeInfo = true;
+        }
+
+        // Solo actualizar la fecha/hora final si se proporcionaron nuevos valores
+        if (hasNewDateInfo || hasNewTimeInfo)
+        {
+            appt.TryCompletarFechaHora();
+        }
+    }
+
+    /// <summary>
+    /// Método especializado para procesar modificaciones preservando campos existentes
+    /// </summary>
+    public async Task ProcessModificationWithLLM(ITelegramBotClient bot, Appointment appt, string rawText, long chatId, CancellationToken ct)
+    {
+        // Crear contexto inteligente para modificación
+        var (textoParaLLM, tipoOperacion) = LLMContextManager.CrearContextoInteligente(appt, rawText, DateTime.Today);
+
+        // Extracción con LLM
+        var dict = await _llm.ExtractWithPublishedPromptAsync(textoParaLLM, DateTime.Today);
+
+        // Usar el método selectivo que preserva campos existentes
+        ApplyOnlyProvidedFields(appt, dict);
+
+        Console.WriteLine($"[MODIFICATION-LLM] Applied selective fields from modification request");
     }
 }

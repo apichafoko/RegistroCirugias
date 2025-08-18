@@ -133,5 +133,6 @@ public class ModificationContext
 {
     public Appointment? OriginalAppointment { get; set; }
     public ModificationRequest? RequestedChanges { get; set; }
+    public Appointment? ModifiedAppointment { get; set; } // Nueva propiedad para el appointment modificado
     public bool IsAwaitingConfirmation { get; set; }
 }

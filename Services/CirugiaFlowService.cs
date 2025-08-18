@@ -373,12 +373,24 @@ public class CirugiaFlowService
         {
             if (inputLower is "si" or "sí" or "ok" or "dale" or "confirmo" or "confirmar")
             {
-                // Ejecutar la modificación
-                var success = await _updateCoordinator.ExecuteModificationAsync(
-                    appt.ModificationContext.OriginalAppointment!, 
-                    appt.ModificationContext.RequestedChanges!, 
-                    chatId, 
-                    ct);
+                // Ejecutar la modificación usando el appointment modificado completo
+                if (appt.ModificationContext.ModifiedAppointment != null)
+                {
+                    var success = await _updateCoordinator.ExecuteDirectModificationAsync(
+                        appt.ModificationContext.OriginalAppointment!, 
+                        appt.ModificationContext.ModifiedAppointment!, 
+                        chatId, 
+                        ct);
+                }
+                else
+                {
+                    // Fallback al método anterior si no hay ModifiedAppointment
+                    var success = await _updateCoordinator.ExecuteModificationAsync(
+                        appt.ModificationContext.OriginalAppointment!, 
+                        appt.ModificationContext.RequestedChanges!, 
+                        chatId, 
+                        ct);
+                }
                 
                 // Limpiar contexto
                 appt.ModificationContext = null;
@@ -1334,29 +1346,7 @@ public class CirugiaFlowService
         var startTime = DateTime.UtcNow;
         try
         {
-            // Usar el mismo formato que usa FlowLLMProcessor pero sin enviar mensajes
-            var prompt = $@"Eres un asistente especializado en interpretar textos de agendas quirúrgicas. 
-
-Input:
-{input} FECHA_HOY={DateTime.Now:dd/MM/yyyy}
-
-Extrae ÚNICAMENTE la información disponible y devuelve un JSON con este formato:
-{{
-    ""dia"": ""DD"",
-    ""mes"": ""MM"", 
-    ""anio"": ""YYYY"",
-    ""hora"": ""HH:MM"",
-    ""lugar"": ""string"",
-    ""cirujano"": ""string"",
-    ""cirugia"": ""string"",
-    ""anestesiologo"": ""string"",
-    ""cantidad"": ""string"",
-    ""notas"": """"
-}}
-
-IMPORTANTE: Devuelve ÚNICAMENTE JSON válido, sin texto adicional.";
-
-            // Usar el método correcto que usa el sistema actual
+            // Usar el método que usa assistants (el prompt está ya configurado en el assistant)
             var dict = await _llm.ExtractWithPublishedPromptAsync(input, DateTime.Today);
             var duration = DateTime.UtcNow - startTime;
             
@@ -1481,28 +1471,45 @@ IMPORTANTE: Devuelve ÚNICAMENTE JSON válido, sin texto adicional.";
             // 3. Una sola coincidencia encontrada
             var appointment = searchResult.SingleResult!;
             
-            // 4. Parsear qué modificaciones quiere hacer
-            var modifications = await _modificationService.ParseModificationAsync(appointment, rawText);
-            
-            if (!modifications.HasChanges)
+            // 4. Crear una copia del appointment para procesamiento con LLM
+            var appointmentCopia = new Appointment
             {
-                // El usuario encontró la cirugía pero no especificó qué cambiar
-                // Mostrar datos actuales y preguntar qué quiere modificar
-                await ShowAppointmentDetailsAndAskWhatToModify(bot, appointment, chatId, ct);
-                return;
-            }
+                // Copiar TODOS los datos del appointment original
+                Id = appointment.Id,
+                ChatId = appointment.ChatId,
+                EquipoId = appointment.EquipoId,
+                GoogleEmail = appointment.GoogleEmail,
+                FechaHora = appointment.FechaHora,
+                Lugar = appointment.Lugar,
+                Cirujano = appointment.Cirujano,
+                Cirugia = appointment.Cirugia,
+                Cantidad = appointment.Cantidad,
+                Anestesiologo = appointment.Anestesiologo,
+                Notas = appointment.Notas,
+                CalendarEventId = appointment.CalendarEventId,
+                CalendarSyncedAt = appointment.CalendarSyncedAt,
+                ReminderSentAt = appointment.ReminderSentAt,
+                ConfirmacionPendiente = false // Para evitar que se procese como nueva cirugía
+            };
             
-            // 5. Mostrar resumen y confirmar
-            var summary = _modificationService.GenerateModificationSummary(appointment, modifications);
+            Console.WriteLine($"[MODIFICATION] Processing modification with LLM for input: {rawText}");
+            
+            // 5. Procesar modificación usando el método especializado que preserva campos existentes
+            await _llmProcessor.ProcessModificationWithLLM(bot, appointmentCopia, rawText, chatId, ct);
+            
+            // appointmentCopia ahora contiene los datos originales + modificaciones aplicadas
+            
+            // 6. Mostrar resumen de cambios
+            var summary = GenerateModificationSummary(appointment, appointmentCopia);
             summary += "\n\n¿Confirmar estos cambios? (sí/no)";
             
             await MessageSender.SendWithRetry(chatId, summary, cancellationToken: ct);
             
-            // 6. Guardar en contexto para confirmación
+            // 7. Guardar en contexto para confirmación
             var modificationContext = new ModificationContext
             {
                 OriginalAppointment = appointment,
-                RequestedChanges = modifications,
+                ModifiedAppointment = appointmentCopia,
                 IsAwaitingConfirmation = true
             };
             
@@ -1524,6 +1531,63 @@ IMPORTANTE: Devuelve ÚNICAMENTE JSON válido, sin texto adicional.";
         await MessageSender.SendWithRetry(chatId,
             "🚧 La funcionalidad de cancelación está en desarrollo. Por ahora podés modificar la cirugía o contactar directamente.",
             cancellationToken: ct);
+    }
+
+    private string GenerateModificationSummary(Appointment original, Appointment modified)
+    {
+        var summary = "📝 *Cambios solicitados:*\n\n";
+        var hasChanges = false;
+
+        // Comparar fecha y hora
+        if (original.FechaHora != modified.FechaHora)
+        {
+            var originalDateTime = original.FechaHora?.ToString("dd/MM/yyyy HH:mm") ?? "No definida";
+            var modifiedDateTime = modified.FechaHora?.ToString("dd/MM/yyyy HH:mm") ?? "No definida";
+            summary += $"📅 Fecha/Hora: {originalDateTime} → *{modifiedDateTime}*\n";
+            hasChanges = true;
+        }
+
+        // Comparar lugar
+        if (original.Lugar != modified.Lugar)
+        {
+            summary += $"📍 Lugar: {original.Lugar ?? "No definido"} → *{modified.Lugar ?? "No definido"}*\n";
+            hasChanges = true;
+        }
+
+        // Comparar cirujano
+        if (original.Cirujano != modified.Cirujano)
+        {
+            summary += $"👨‍⚕️ Cirujano: {original.Cirujano ?? "No definido"} → *{modified.Cirujano ?? "No definido"}*\n";
+            hasChanges = true;
+        }
+
+        // Comparar cirugía
+        if (original.Cirugia != modified.Cirugia)
+        {
+            summary += $"🏥 Cirugía: {original.Cirugia ?? "No definida"} → *{modified.Cirugia ?? "No definida"}*\n";
+            hasChanges = true;
+        }
+
+        // Comparar cantidad
+        if (original.Cantidad != modified.Cantidad)
+        {
+            summary += $"🔢 Cantidad: {original.Cantidad} → *{modified.Cantidad}*\n";
+            hasChanges = true;
+        }
+
+        // Comparar anestesiólogo
+        if (original.Anestesiologo != modified.Anestesiologo)
+        {
+            summary += $"💉 Anestesiólogo: {original.Anestesiologo ?? "No definido"} → *{modified.Anestesiologo ?? "No definido"}*\n";
+            hasChanges = true;
+        }
+
+        if (!hasChanges)
+        {
+            summary = "ℹ️ No se detectaron cambios en los datos de la cirugía.";
+        }
+
+        return summary;
     }
 
     private async Task HandleQueryAsync(ITelegramBotClient bot, long chatId, string rawText, CancellationToken ct)

@@ -127,8 +127,8 @@ public static class ServiceCollectionExtensions
         
         services.AddScoped<IAnesthesiologistSearchService>(provider =>
         {
-            var openAiOptions = provider.GetRequiredService<Microsoft.Extensions.Options.IOptions<OpenAIOptions>>().Value;
-            return new AnesthesiologistSearchService(openAiOptions.ApiKey);
+            var llmAssistant = provider.GetRequiredService<RegistroCx.Services.Extraction.LLMOpenAIAssistant>();
+            return new AnesthesiologistSearchService(llmAssistant);
         });
         
         services.AddScoped<UserLearningService>(provider =>

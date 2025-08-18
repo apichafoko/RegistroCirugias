@@ -21,7 +21,7 @@ namespace RegistroCx.Services.Extraction
 
         // Copia estos valores exactamente desde tu Dashboard → Deploy → Prompt ID / Version
         private const string PromptId      = "pmpt_688fff5af7e48190bdae049dcfdc44a5038f25fca90d0503";
-        private const string PromptVersion = "6";
+        private const string PromptVersion = "7";
         
         // Prompt para detección de múltiples cirugías (actualizado para evitar duplicados)
         private const string MultiSurgeryPromptId      = "pmpt_689a0e6ad6988193a39feb176a30b80d0437b8506c01cf3d";
@@ -314,6 +314,89 @@ namespace RegistroCx.Services.Extraction
                 throw new Exception("No se encontró respuesta en el parsing de modificación.");
 
             return assistantText.Trim();
+        }
+    }
+
+    /// <summary>
+    /// Busca anestesiólogos por similitud usando el assistant
+    /// </summary>
+    public async Task<string> SearchAnesthesiologistAsync(string partialName, string teamEmail)
+    {
+        try
+        {
+            var searchRequest = new
+            {
+                operacion = "buscar_anestesiologo_por_similitud",
+                nombre_parcial = partialName.ToLowerInvariant().Trim(),
+                equipo_email = teamEmail
+            };
+
+            var requestJson = JsonSerializer.Serialize(searchRequest, new JsonSerializerOptions
+            {
+                PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower
+            });
+
+            Console.WriteLine($"[LLM-ANESTHESIOLOGIST-SEARCH] Sending request: {requestJson}");
+
+            var body = new
+            {
+                prompt = new { id = PromptId, version = PromptVersion },
+                input = requestJson
+            };
+
+            var jsonBody = JsonSerializer.Serialize(body);
+
+            using var content = new StringContent(jsonBody, Encoding.UTF8, "application/json");
+            using var resp = await _http.PostAsync("/v1/responses", content);
+
+            // Manejar errores
+            if (!resp.IsSuccessStatusCode)
+            {
+                var errorContent = await resp.Content.ReadAsStringAsync();
+                Console.WriteLine($"[LLM-ANESTHESIOLOGIST-SEARCH] Error {resp.StatusCode}: {errorContent}");
+                return "{\"candidatos\": []}";
+            }
+
+            // Leer la respuesta
+            var raw = await resp.Content.ReadAsStringAsync();
+            Console.WriteLine($"[LLM-ANESTHESIOLOGIST-SEARCH] Response JSON: {raw}");
+
+            using var doc = JsonDocument.Parse(raw);
+
+            // Buscar en 'output' el message
+            if (!doc.RootElement.TryGetProperty("output", out var outputArr))
+                throw new Exception("La respuesta no contiene 'output'.");
+
+            string assistantText = null!;
+            foreach (var outEntry in outputArr.EnumerateArray())
+            {
+                if (outEntry.GetProperty("type").GetString() == "message")
+                {
+                    foreach (var part in outEntry.GetProperty("content").EnumerateArray())
+                    {
+                        if (part.GetProperty("type").GetString() == "output_text")
+                        {
+                            assistantText = part.GetProperty("text").GetString()!;
+                            break;
+                        }
+                    }
+                    break;
+                }
+            }
+
+            if (string.IsNullOrEmpty(assistantText))
+            {
+                Console.WriteLine("[LLM-ANESTHESIOLOGIST-SEARCH] No assistant text found");
+                return "{\"candidatos\": []}";
+            }
+
+            Console.WriteLine($"[LLM-ANESTHESIOLOGIST-SEARCH] Assistant response: {assistantText}");
+            return assistantText;
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[LLM-ANESTHESIOLOGIST-SEARCH] Error: {ex.Message}");
+            return "{\"candidatos\": []}";
         }
     }
 }

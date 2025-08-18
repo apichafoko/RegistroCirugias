@@ -15,6 +15,7 @@ public interface IAppointmentRepository
     Task DeleteAsync(long id, CancellationToken ct);
     Task UpdateCalendarEventAsync(long appointmentId, string eventId, CancellationToken ct);
     Task UpdateAsync(long appointmentId, ModificationRequest changes, CancellationToken ct = default);
+    Task UpdateDirectAsync(long appointmentId, Appointment modifiedAppointment, CancellationToken ct = default);
     
     // Métodos con equipo_id
     Task<List<Appointment>> GetPendingCalendarSyncAsync(int equipoId, CancellationToken ct);
