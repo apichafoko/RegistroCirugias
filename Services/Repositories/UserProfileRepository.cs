@@ -243,16 +243,46 @@ public class UserProfileRepository : IUserProfileRepository
 
     public async Task UpdateTokensAsync(long chatId, string access, string? refresh, DateTime? expiry, CancellationToken ct)
     {
-        const string sql = @"
-        UPDATE user_profiles
-        SET google_access_token = @access,
-            google_refresh_token = COALESCE(@refresh, google_refresh_token),
-            google_token_expiry = @expiry,
-            oauth_nonce = NULL,
-            updated_at = now()
-        WHERE chat_id = @chatId";
         await using var conn = await OpenAsync(ct);
-        await conn.ExecuteAsync(sql, new { chatId, access, refresh, expiry });
+        
+        // 1. Obtener el email del usuario que está actualizando
+        const string getEmailSql = @"
+            SELECT google_email 
+            FROM user_profiles 
+            WHERE chat_id = @chatId";
+        
+        var userEmail = await conn.QuerySingleOrDefaultAsync<string>(getEmailSql, new { chatId });
+        
+        if (string.IsNullOrEmpty(userEmail))
+        {
+            // Si no tiene email, solo actualizar este usuario
+            const string singleUpdateSql = @"
+                UPDATE user_profiles
+                SET google_access_token = @access,
+                    google_refresh_token = COALESCE(@refresh, google_refresh_token),
+                    google_token_expiry = @expiry,
+                    oauth_nonce = NULL,
+                    calendar_autorizado = true,
+                    updated_at = now()
+                WHERE chat_id = @chatId";
+            await conn.ExecuteAsync(singleUpdateSql, new { chatId, access, refresh, expiry });
+            return;
+        }
+        
+        // 2. Actualizar TODOS los usuarios del equipo que comparten el mismo email
+        const string teamUpdateSql = @"
+            UPDATE user_profiles
+            SET google_access_token = @access,
+                google_refresh_token = COALESCE(@refresh, google_refresh_token),
+                google_token_expiry = @expiry,
+                oauth_nonce = NULL,
+                calendar_autorizado = true,
+                updated_at = now()
+            WHERE google_email = @userEmail";
+        
+        var rowsUpdated = await conn.ExecuteAsync(teamUpdateSql, new { access, refresh, expiry, userEmail });
+        
+        Console.WriteLine($"[OAuth] ✅ Updated tokens for {rowsUpdated} team members with email {userEmail}");
     }
 
     #region Métodos de Telegram (migrados desde UsuarioTelegramRepository)

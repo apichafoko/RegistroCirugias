@@ -358,8 +358,8 @@ namespace RegistroCx.Services.UI
                 }
                 else
                 {
-                    // Fallback if appointment not found in context
-                    await MessageSender.SendWithRetry(chatId, "✅ Cirugía confirmada exitosamente.", cancellationToken: ct);
+                    // Error if appointment not found in context - cannot retry without appointment data
+                    await MessageSender.SendWithRetry(chatId, "❌ No se puede reintentar la confirmación. Por favor, crea la cirugía nuevamente.", cancellationToken: ct);
                 }
                 
                 // Remove inline keyboard

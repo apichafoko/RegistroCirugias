@@ -21,11 +21,11 @@ namespace RegistroCx.Services.Extraction
 
         // Copia estos valores exactamente desde tu Dashboard → Deploy → Prompt ID / Version
         private const string PromptId      = "pmpt_688fff5af7e48190bdae049dcfdc44a5038f25fca90d0503";
-        private const string PromptVersion = "7";
+        private const string PromptVersion = "9";
         
         // Prompt para detección de múltiples cirugías (actualizado para evitar duplicados)
         private const string MultiSurgeryPromptId      = "pmpt_689a0e6ad6988193a39feb176a30b80d0437b8506c01cf3d";
-        private const string MultiSurgeryPromptVersion = "2";
+        private const string MultiSurgeryPromptVersion = "3";
         
         // Prompt para clasificación de intents
         private const string IntentClassificationPromptId      = "pmpt_68a0f4164bbc81909e7066dd9486ccf30687ba563fc8837c"; 
@@ -315,7 +315,6 @@ namespace RegistroCx.Services.Extraction
 
             return assistantText.Trim();
         }
-    }
 
     /// <summary>
     /// Busca anestesiólogos por similitud usando el assistant
@@ -398,5 +397,6 @@ namespace RegistroCx.Services.Extraction
             Console.WriteLine($"[LLM-ANESTHESIOLOGIST-SEARCH] Error: {ex.Message}");
             return "{\"candidatos\": []}";
         }
+    }
     }
 }

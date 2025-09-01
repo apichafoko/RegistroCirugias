@@ -52,15 +52,15 @@ public class AppointmentRepository : IAppointmentRepository
     {
         const string sql = @"
             INSERT INTO appointments 
-                (equipo_id, chat_id, google_email, fecha_hora, lugar, cirujano, cirugia, cantidad, anestesiologo, calendar_event_id, calendar_synced_at, reminder_sent_at, created_at)
+                (equipo_id, user_profile_id, google_email, fecha_hora, lugar, cirujano, cirugia, cantidad, anestesiologo, calendar_event_id, calendar_synced_at, reminder_sent_at, created_at)
             VALUES 
-                (@EquipoId, @ChatId, @GoogleEmail, @FechaHora, @Lugar, @Cirujano, @Cirugia, @Cantidad, @Anestesiologo, @CalendarEventId, @CalendarSyncedAt, @ReminderSentAt, now())
+                (@EquipoId, @UserProfileId, @GoogleEmail, @FechaHora, @Lugar, @Cirujano, @Cirugia, @Cantidad, @Anestesiologo, @CalendarEventId, @CalendarSyncedAt, @ReminderSentAt, now())
             RETURNING id;";
 
         var parameters = new
         {
             EquipoId = equipoId,
-            ChatId = appointment.ChatId, // Para tracking del miembro que creó el appointment
+            UserProfileId = appointment.UserProfileId,
             GoogleEmail = appointment.GoogleEmail,
             FechaHora = appointment.FechaHora,
             Lugar = appointment.Lugar,
@@ -95,7 +95,7 @@ public class AppointmentRepository : IAppointmentRepository
     public async Task<Appointment?> GetByIdAsync(long id, CancellationToken ct)
     {
         const string sql = @"
-            SELECT id, equipo_id, chat_id, google_email, fecha_hora, lugar, cirujano, cirugia, cantidad, anestesiologo, calendar_event_id, calendar_synced_at, reminder_sent_at, created_at
+            SELECT id, equipo_id, user_profile_id, google_email, fecha_hora, lugar, cirujano, cirugia, cantidad, anestesiologo, calendar_event_id, calendar_synced_at, reminder_sent_at, created_at
             FROM appointments 
             WHERE id = @id;";
 
@@ -110,7 +110,7 @@ public class AppointmentRepository : IAppointmentRepository
         {
             Id = result.id,
             EquipoId = result.equipo_id,
-            ChatId = result.chat_id, // Para tracking
+            UserProfileId = result.user_profile_id,
             GoogleEmail = result.google_email,
             FechaHora = result.fecha_hora,
             Lugar = result.lugar,
@@ -151,7 +151,7 @@ public class AppointmentRepository : IAppointmentRepository
     public async Task<List<Appointment>> GetAppointmentsNeedingRemindersAsync(CancellationToken ct)
     {
         const string sql = @"
-            SELECT id, chat_id, google_email, fecha_hora, lugar, cirujano, cirugia, cantidad, anestesiologo, 
+            SELECT id, equipo_id, user_profile_id, google_email, fecha_hora, lugar, cirujano, cirugia, cantidad, anestesiologo, 
                    calendar_event_id, calendar_synced_at, reminder_sent_at, created_at
             FROM appointments 
             WHERE reminder_sent_at IS NULL 
@@ -166,7 +166,8 @@ public class AppointmentRepository : IAppointmentRepository
         return results.Select(result => new Appointment
         {
             Id = result.id,
-            ChatId = result.chat_id,
+            EquipoId = result.equipo_id,
+            UserProfileId = result.user_profile_id,
             GoogleEmail = result.google_email,
             FechaHora = result.fecha_hora,
             Lugar = result.lugar,
@@ -295,7 +296,7 @@ public class AppointmentRepository : IAppointmentRepository
     public async Task<List<Appointment>> GetPendingCalendarSyncAsync(int equipoId, CancellationToken ct)
     {
         const string sql = @"
-            SELECT id, equipo_id, chat_id, google_email, fecha_hora, lugar, cirujano, cirugia, cantidad, anestesiologo, calendar_event_id, calendar_synced_at, reminder_sent_at, created_at
+            SELECT id, equipo_id, chat_id, user_profile_id, google_email, fecha_hora, lugar, cirujano, cirugia, cantidad, anestesiologo, calendar_event_id, calendar_synced_at, reminder_sent_at, created_at
             FROM appointments 
             WHERE equipo_id = @equipoId AND calendar_event_id IS NULL
             ORDER BY fecha_hora";
@@ -308,6 +309,7 @@ public class AppointmentRepository : IAppointmentRepository
             Id = r.id,
             EquipoId = r.equipo_id,
             ChatId = r.chat_id,
+            UserProfileId = r.user_profile_id,
             GoogleEmail = r.google_email,
             FechaHora = r.fecha_hora,
             Lugar = r.lugar,
@@ -324,7 +326,7 @@ public class AppointmentRepository : IAppointmentRepository
     public async Task<List<Appointment>> GetByEquipoAndDateRangeAsync(int equipoId, DateTime startDate, DateTime endDate, CancellationToken ct = default)
     {
         const string sql = @"
-            SELECT id, equipo_id, chat_id, google_email, fecha_hora, lugar, cirujano, cirugia, cantidad, anestesiologo, calendar_event_id, calendar_synced_at, reminder_sent_at, created_at
+            SELECT id, equipo_id, chat_id, user_profile_id, google_email, fecha_hora, lugar, cirujano, cirugia, cantidad, anestesiologo, calendar_event_id, calendar_synced_at, reminder_sent_at, created_at
             FROM appointments 
             WHERE equipo_id = @equipoId 
               AND fecha_hora >= @startDate 
@@ -339,6 +341,7 @@ public class AppointmentRepository : IAppointmentRepository
             Id = r.id,
             EquipoId = r.equipo_id,
             ChatId = r.chat_id,
+            UserProfileId = r.user_profile_id,
             GoogleEmail = r.google_email,
             FechaHora = r.fecha_hora,
             Lugar = r.lugar,
@@ -437,7 +440,7 @@ public class AppointmentRepository : IAppointmentRepository
     public async Task<List<Appointment>> GetAppointmentsWithoutEquipoAsync(CancellationToken ct = default)
     {
         const string sql = @"
-            SELECT id, equipo_id, chat_id, google_email, fecha_hora, lugar, cirujano, cirugia, cantidad, anestesiologo, calendar_event_id, calendar_synced_at, reminder_sent_at, created_at
+            SELECT id, equipo_id, chat_id, user_profile_id, google_email, fecha_hora, lugar, cirujano, cirugia, cantidad, anestesiologo, calendar_event_id, calendar_synced_at, reminder_sent_at, created_at
             FROM appointments 
             WHERE equipo_id IS NULL
             ORDER BY fecha_hora";
@@ -450,6 +453,7 @@ public class AppointmentRepository : IAppointmentRepository
             Id = r.id,
             EquipoId = r.equipo_id,
             ChatId = r.chat_id,
+            UserProfileId = r.user_profile_id,
             GoogleEmail = r.google_email,
             FechaHora = r.fecha_hora,
             Lugar = r.lugar,

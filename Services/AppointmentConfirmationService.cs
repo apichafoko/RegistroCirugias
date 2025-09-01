@@ -1,8 +1,11 @@
 using System;
+using System.Collections.Generic;
+using System.Linq;
 using System.Net.Mail;
 using System.Threading;
 using System.Threading.Tasks;
 using Telegram.Bot;
+using Telegram.Bot.Types.ReplyMarkups;
 using RegistroCx.Models;
 using RegistroCx.Services.Repositories;
 using RegistroCx.Helpers._0Auth;
@@ -112,8 +115,19 @@ public class AppointmentConfirmationService
             
             if (!silent)
             {
+                // Crear teclado con opciones de reintento y cancelar
+                var retryKeyboard = new InlineKeyboardMarkup(new[]
+                {
+                    new[]
+                    {
+                        InlineKeyboardButton.WithCallbackData("🔄 Reintentar", $"confirm_{appt.Id}"),
+                        InlineKeyboardButton.WithCallbackData("❌ Cancelar", $"cancel_{appt.Id}")
+                    }
+                });
+
                 await MessageSender.SendWithRetry(chatId,
                     "❌ Hubo un error al procesar la confirmación. Por favor, intenta nuevamente.",
+                    replyMarkup: retryKeyboard,
                     cancellationToken: ct);
             }
             return false;
@@ -126,9 +140,10 @@ public class AppointmentConfirmationService
         {
             Console.WriteLine($"[DB] Saving appointment for chat {chatId}: {appt.Cirugia} on {appt.FechaHora}");
             
-            // Obtener el GoogleEmail del usuario para reportes compartidos por equipo
+            // Obtener el GoogleEmail y user_profile_id del usuario 
             var userProfile = await _userRepo.GetOrCreateAsync(chatId, ct);
             appt.GoogleEmail = userProfile.GoogleEmail;
+            appt.UserProfileId = userProfile.Id;
             
             // Resolver chatId a equipoId para el nuevo sistema de equipos
             var equipoId = await _equipoService.ObtenerPrimerEquipoIdPorChatIdAsync(chatId, ct);
