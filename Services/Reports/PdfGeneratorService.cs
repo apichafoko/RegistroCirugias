@@ -1,5 +1,6 @@
 using System;
 using System.IO;
+using System.Reflection;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Linq;
@@ -102,7 +103,29 @@ public class PdfGeneratorService
                     .FontSize(12).FontColor(Colors.Grey.Medium);
             });
 
-            row.ConstantItem(100).Height(50).Placeholder();
+            row.ConstantItem(100).Height(50).AlignCenter().Element(container =>
+            {
+                try
+                {
+                    var assembly = Assembly.GetExecutingAssembly();
+                    var resourceName = "RegistroCx.Images.Logo_Registrocx.png";
+                    using var stream = assembly.GetManifestResourceStream(resourceName);
+                    if (stream != null)
+                    {
+                        var logoBytes = new byte[stream.Length];
+                        stream.Read(logoBytes, 0, logoBytes.Length);
+                        container.Image(logoBytes).FitArea();
+                    }
+                    else
+                    {
+                        container.Text("📋").FontSize(24).FontColor(Colors.Blue.Darken2).AlignCenter();
+                    }
+                }
+                catch
+                {
+                    container.Text("📋").FontSize(24).FontColor(Colors.Blue.Darken2).AlignCenter();
+                }
+            });
         });
     }
 

@@ -3,6 +3,7 @@ using RegistroCx.ProgramServices.Configuration;
 using RegistroCx.Services.Repositories;
 using RegistroCx.Services.Onboarding;
 using RegistroCx.Services.Extraction;
+using RegistroCx.Helpers;
 using RegistroCx.Helpers._0Auth;
 using RegistroCx.Services;
 using RegistroCx.Services.Reports;
@@ -92,6 +93,12 @@ public static class ServiceCollectionExtensions
             return new AnesthesiologistRepository(dbOptions.Value.ConnectionString);
         });
         
+        services.AddScoped<ISurgeonRepository>(provider =>
+        {
+            var dbOptions = provider.GetRequiredService<Microsoft.Extensions.Options.IOptions<DatabaseOptions>>();
+            return new SurgeonRepository(dbOptions.Value.ConnectionString);
+        });
+        
         // UsuarioTelegramRepository eliminado - funcionalidad migrada a UserProfileRepository
         
         services.AddScoped<IEquipoRepository>(provider =>
@@ -154,13 +161,23 @@ public static class ServiceCollectionExtensions
         {
             var cacheService = provider.GetRequiredService<ICacheService>();
             var logger = provider.GetRequiredService<ILogger<QuickEditService>>();
+            var anesthesiologistRepo = provider.GetRequiredService<IAnesthesiologistRepository>();
+            var surgeonRepo = provider.GetRequiredService<ISurgeonRepository>();
+            var equipoService = provider.GetRequiredService<EquipoService>();
             var confirmationService = provider.GetRequiredService<AppointmentConfirmationService>();
             var pendingAppointments = provider.GetRequiredService<Dictionary<long, RegistroCx.Models.Appointment>>();
-            return new QuickEditService(cacheService, logger, confirmationService, pendingAppointments);
+            return new QuickEditService(cacheService, logger, anesthesiologistRepo, surgeonRepo, equipoService, confirmationService, pendingAppointments);
         });
         
         // Context Management
         services.AddScoped<IConversationContextManager, ConversationContextManager>();
+        
+        // Medical Context Validation
+        services.AddScoped<MedicalContextValidator>(provider =>
+        {
+            var llm = provider.GetRequiredService<LLMOpenAIAssistant>();
+            return new MedicalContextValidator(llm);
+        });
         
         // Diccionarios compartidos para mantener estado entre requests
         services.AddSingleton<Dictionary<long, RegistroCx.Models.Appointment>>();
@@ -204,7 +221,8 @@ public static class ServiceCollectionExtensions
             var quickEdit = provider.GetRequiredService<IQuickEditService>();
             var contextManager = provider.GetRequiredService<IConversationContextManager>();
             var equipoService = provider.GetRequiredService<EquipoService>();
-            return new CirugiaFlowService(llm, pending, confirmationService, oauthService, userRepo, calendarSync, appointmentRepo, multiSurgeryParser, reportService, anesthesiologistSearchService, learningService, searchService, modificationService, updateCoordinator, analytics, cache, quickEdit, contextManager, equipoService);
+            var medicalValidator = provider.GetRequiredService<MedicalContextValidator>();
+            return new CirugiaFlowService(llm, pending, confirmationService, oauthService, userRepo, calendarSync, appointmentRepo, multiSurgeryParser, reportService, anesthesiologistSearchService, learningService, searchService, modificationService, updateCoordinator, analytics, cache, quickEdit, contextManager, equipoService, medicalValidator);
         });
         services.AddScoped<AppointmentConfirmationService>(provider =>
         {

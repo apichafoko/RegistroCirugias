@@ -17,7 +17,7 @@ namespace RegistroCx.Services.UI
         // Generate keyboard for field-specific editing
         InlineKeyboardMarkup GenerateDateSelectionKeyboard(Appointment appointment);
         InlineKeyboardMarkup GenerateTimeSelectionKeyboard(Appointment appointment);
-        Task<InlineKeyboardMarkup> GenerateSurgeonSelectionKeyboardAsync();
+        Task<InlineKeyboardMarkup> GenerateSurgeonSelectionKeyboardAsync(long chatId);
         Task<InlineKeyboardMarkup> GenerateLocationSelectionKeyboardAsync();
         
         // Generate keyboard for modification selection
@@ -31,5 +31,8 @@ namespace RegistroCx.Services.UI
         
         // Update existing message with new keyboard
         Task UpdateMessageKeyboardAsync(ITelegramBotClient bot, long chatId, int messageId, InlineKeyboardMarkup newKeyboard, CancellationToken ct);
+        
+        // Handle text input for "other" options
+        Task<bool> TryHandleTextInputAsync(ITelegramBotClient bot, long chatId, string text, CancellationToken ct);
     }
 }

@@ -35,4 +35,8 @@
     <None Remove="/Users/urielfraidenraij_1/.nuget/packages/vosk/0.3.38/build/lib/osx-universal/libvosk.dylib" />
   </ItemGroup>
 
+  <ItemGroup>
+    <EmbeddedResource Include="Images/Logo_Registrocx.png" />
+  </ItemGroup>
+
 </Project>

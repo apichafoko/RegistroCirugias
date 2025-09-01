@@ -10,6 +10,7 @@ using RegistroCx.Models;
 using RegistroCx.Services.Caching;
 using RegistroCx.Services;
 using RegistroCx.Services.Flow;
+using RegistroCx.Services.Repositories;
 using RegistroCx.ProgramServices.Services.Telegram;
 
 namespace RegistroCx.Services.UI
@@ -20,6 +21,12 @@ namespace RegistroCx.Services.UI
         private readonly ILogger<QuickEditService> _logger;
         private readonly AppointmentConfirmationService? _confirmationService;
         private readonly Dictionary<long, Appointment>? _pendingAppointments;
+        private readonly IAnesthesiologistRepository _anesthesiologistRepo;
+        private readonly ISurgeonRepository _surgeonRepo;
+        private readonly EquipoService _equipoService;
+        
+        // Dictionary to track pending edit states for "other" options
+        private static readonly Dictionary<long, (string action, long appointmentId)> _pendingEdits = new();
         
         // Callback data prefixes
         private const string CONFIRM_PREFIX = "confirm_";
@@ -31,12 +38,22 @@ namespace RegistroCx.Services.UI
         private const string LOCATION_PREFIX = "location_";
         private const string BACK_PREFIX = "back_";
 
-        public QuickEditService(ICacheService cacheService, ILogger<QuickEditService> logger, AppointmentConfirmationService? confirmationService = null, Dictionary<long, Appointment>? pendingAppointments = null)
+        public QuickEditService(
+            ICacheService cacheService, 
+            ILogger<QuickEditService> logger, 
+            IAnesthesiologistRepository anesthesiologistRepo,
+            ISurgeonRepository surgeonRepo,
+            EquipoService equipoService,
+            AppointmentConfirmationService? confirmationService = null, 
+            Dictionary<long, Appointment>? pendingAppointments = null)
         {
             _cacheService = cacheService;
             _logger = logger;
             _confirmationService = confirmationService;
             _pendingAppointments = pendingAppointments;
+            _anesthesiologistRepo = anesthesiologistRepo;
+            _surgeonRepo = surgeonRepo;
+            _equipoService = equipoService;
         }
 
         public InlineKeyboardMarkup GenerateConfirmationKeyboard(Appointment appointment)
@@ -159,20 +176,21 @@ namespace RegistroCx.Services.UI
             return new InlineKeyboardMarkup(buttons);
         }
 
-        public async Task<InlineKeyboardMarkup> GenerateSurgeonSelectionKeyboardAsync()
+        public async Task<InlineKeyboardMarkup> GenerateSurgeonSelectionKeyboardAsync(long chatId)
         {
             var buttons = new List<List<InlineKeyboardButton>>();
             
-            // Get common surgeons from cache
-            var commonSurgeons = await _cacheService.GetSurgeonNamesAsync();
+            // Get team-specific surgeons from database
+            var equipoId = await _equipoService.ObtenerPrimerEquipoIdPorChatIdAsync(chatId);
+            var teamSurgeons = await _surgeonRepo.GetNamesByEquipoAsync(equipoId, CancellationToken.None);
 
             // Add surgeons in rows of 2
-            for (int i = 0; i < commonSurgeons.Count; i += 2)
+            for (int i = 0; i < teamSurgeons.Count; i += 2)
             {
                 var row = new List<InlineKeyboardButton>();
-                for (int j = 0; j < 2 && i + j < commonSurgeons.Count; j++)
+                for (int j = 0; j < 2 && i + j < teamSurgeons.Count; j++)
                 {
-                    var surgeon = commonSurgeons[i + j];
+                    var surgeon = teamSurgeons[i + j];
                     row.Add(InlineKeyboardButton.WithCallbackData(surgeon, $"setsurgeon_{surgeon}"));
                 }
                 buttons.Add(row);
@@ -214,13 +232,172 @@ namespace RegistroCx.Services.UI
             return new InlineKeyboardMarkup(buttons);
         }
 
+        public async Task<InlineKeyboardMarkup> GenerateAnesthesiologistSelectionKeyboardAsync(long chatId)
+        {
+            var buttons = new List<List<InlineKeyboardButton>>();
+            
+            try
+            {
+                // Get team-specific anesthesiologists from database
+                var equipoId = await _equipoService.ObtenerPrimerEquipoIdPorChatIdAsync(chatId, CancellationToken.None);
+                var teamAnesthesiologists = await _anesthesiologistRepo.GetNamesByEquipoAsync(equipoId, CancellationToken.None);
+
+                // Add team anesthesiologists in rows of 1 (names can be long)
+                foreach (var anesthesiologist in teamAnesthesiologists)
+                {
+                    buttons.Add(new List<InlineKeyboardButton>
+                    {
+                        InlineKeyboardButton.WithCallbackData(anesthesiologist, $"setanesthesiologist_{anesthesiologist}")
+                    });
+                }
+            }
+            catch
+            {
+                // Fallback to cache if team lookup fails
+                var commonAnesthesiologists = await _cacheService.GetAnesthesiologistNamesAsync();
+                foreach (var anesthesiologist in commonAnesthesiologists)
+                {
+                    buttons.Add(new List<InlineKeyboardButton>
+                    {
+                        InlineKeyboardButton.WithCallbackData(anesthesiologist, $"setanesthesiologist_{anesthesiologist}")
+                    });
+                }
+            }
+
+            // Add "Other anesthesiologist" and "No anesthesiologist" options
+            buttons.Add(new List<InlineKeyboardButton>
+            {
+                InlineKeyboardButton.WithCallbackData("💉 Otro anestesiólogo", "otheranesthesiologist"),
+                InlineKeyboardButton.WithCallbackData("🚫 Sin anestesiólogo", "noanesthesiologist")
+            });
+
+            buttons.Add(new List<InlineKeyboardButton>
+            {
+                InlineKeyboardButton.WithCallbackData("⬅️ Volver", "back_edit")
+            });
+
+            return new InlineKeyboardMarkup(buttons);
+        }
+
+        public Task<InlineKeyboardMarkup> GenerateSurgerySelectionKeyboardAsync()
+        {
+            var buttons = new List<List<InlineKeyboardButton>>();
+            
+            // Common surgery types
+            var commonSurgeries = new[]
+            {
+                "CERS", "Adenoides", "Amígdalas", "Septoplastía", "Rinoplastía",
+                "Miringoplastía", "Timpanoplastía", "Polipectomía", "Sinusitis",
+                "Mastoidectomía", "Laringoscopía", "Traqueostomía"
+            };
+
+            // Add surgeries in rows of 2
+            for (int i = 0; i < commonSurgeries.Length; i += 2)
+            {
+                var row = new List<InlineKeyboardButton>();
+                for (int j = 0; j < 2 && i + j < commonSurgeries.Length; j++)
+                {
+                    var surgery = commonSurgeries[i + j];
+                    row.Add(InlineKeyboardButton.WithCallbackData(surgery, $"setsurgery_{surgery}"));
+                }
+                buttons.Add(row);
+            }
+
+            // Add "Other surgery" option
+            buttons.Add(new List<InlineKeyboardButton>
+            {
+                InlineKeyboardButton.WithCallbackData("🔬 Otra cirugía", "othersurgery"),
+                InlineKeyboardButton.WithCallbackData("⬅️ Volver", "back_edit")
+            });
+
+            return Task.FromResult(new InlineKeyboardMarkup(buttons));
+        }
+
+        public InlineKeyboardMarkup GenerateQuantitySelectionKeyboard(Appointment appointment)
+        {
+            var buttons = new List<List<InlineKeyboardButton>>();
+            
+            // Common quantities (1-5)
+            var row1 = new List<InlineKeyboardButton>();
+            var row2 = new List<InlineKeyboardButton>();
+            
+            for (int i = 1; i <= 5; i++)
+            {
+                var quantityText = i == 1 ? "1 cirugía" : $"{i} cirugías";
+                var button = InlineKeyboardButton.WithCallbackData(quantityText, $"setquantity_{appointment.Id}_{i}");
+                
+                if (i <= 3)
+                    row1.Add(button);
+                else
+                    row2.Add(button);
+            }
+            
+            buttons.Add(row1);
+            buttons.Add(row2);
+
+            // Add "Other quantity" option
+            buttons.Add(new List<InlineKeyboardButton>
+            {
+                InlineKeyboardButton.WithCallbackData("🔢 Otra cantidad", "otherquantity"),
+                InlineKeyboardButton.WithCallbackData("⬅️ Volver", $"edit_{appointment.Id}")
+            });
+
+            return new InlineKeyboardMarkup(buttons);
+        }
+
+        private string FormatAppointmentForConfirmation(Appointment appointment)
+        {
+            var dateStr = appointment.FechaHora?.ToString("dd/MM/yyyy HH:mm") ?? "Fecha pendiente";
+            var quantityStr = appointment.Cantidad?.ToString() ?? "Cantidad pendiente";
+            var anesthesiologistStr = string.IsNullOrEmpty(appointment.Anestesiologo) ? "Sin anestesiólogo" : appointment.Anestesiologo;
+            
+            return $"📅 <b>{dateStr}</b>\n" +
+                   $"🏥 <b>{appointment.Lugar ?? "Lugar pendiente"}</b>\n" +
+                   $"👨‍⚕️ <b>{appointment.Cirujano ?? "Cirujano pendiente"}</b>\n" +
+                   $"🔬 <b>{appointment.Cirugia ?? "Cirugía pendiente"}</b>\n" +
+                   $"🔢 <b>{quantityStr}</b>\n" +
+                   $"💉 <b>{anesthesiologistStr}</b>";
+        }
+
         public async Task<bool> HandleCallbackQueryAsync(ITelegramBotClient bot, long chatId, string callbackData, int messageId, CancellationToken ct)
         {
             try
             {
                 _logger.LogInformation("Handling callback query: {CallbackData}", callbackData);
 
-                // Parse callback data
+                // Handle callbacks without underscore first
+                switch (callbackData)
+                {
+                    case "othersurgeon":
+                        await HandleOtherSurgeonAsync(bot, chatId, messageId, ct);
+                        return true;
+                    case "otheranesthesiologist":
+                        await HandleOtherAnesthesiologistAsync(bot, chatId, messageId, ct);
+                        return true;
+                    case "othersurgery":
+                        await HandleOtherSurgeryAsync(bot, chatId, messageId, ct);
+                        return true;
+                    case "otherlocation":
+                        await HandleOtherLocationAsync(bot, chatId, messageId, ct);
+                        return true;
+                    case "otherquantity":
+                        await HandleOtherQuantityAsync(bot, chatId, messageId, ct);
+                        return true;
+                    case "otherdate":
+                        await HandleOtherDateAsync(bot, chatId, messageId, ct);
+                        return true;
+                    case "othertime":
+                        await HandleOtherTimeAsync(bot, chatId, messageId, ct);
+                        return true;
+                    case "noanesthesiologist":
+                        await HandleNoAnesthesiologistAsync(bot, chatId, messageId, ct);
+                        return true;
+                    case "back_edit":
+                        await HandleBackEditAsync(bot, chatId, messageId, ct);
+                        return true;
+                }
+
+                // Parse callback data with underscore
                 var parts = callbackData.Split('_', 2);
                 if (parts.Length < 2) return false;
 
@@ -286,6 +463,34 @@ namespace RegistroCx.Services.UI
 
                     case "setlocation":
                         await HandleSetLocationAsync(bot, chatId, messageId, parameter, ct);
+                        return true;
+
+                    case "anesthesiologist":
+                        await HandleAnesthesiologistEditAsync(bot, chatId, messageId, parameter, ct);
+                        return true;
+
+                    case "setanesthesiologist":
+                        await HandleSetAnesthesiologistAsync(bot, chatId, messageId, parameter, ct);
+                        return true;
+
+                    case "noanesthesiologist":
+                        await HandleNoAnesthesiologistAsync(bot, chatId, messageId, ct);
+                        return true;
+
+                    case "surgery":
+                        await HandleSurgeryEditAsync(bot, chatId, messageId, parameter, ct);
+                        return true;
+
+                    case "setsurgery":
+                        await HandleSetSurgeryAsync(bot, chatId, messageId, parameter, ct);
+                        return true;
+
+                    case "quantity":
+                        await HandleQuantityEditAsync(bot, chatId, messageId, parameter, ct);
+                        return true;
+
+                    case "setquantity":
+                        await HandleSetQuantityAsync(bot, chatId, messageId, parameter, ct);
                         return true;
 
                     case "back":
@@ -410,7 +615,7 @@ namespace RegistroCx.Services.UI
 
         private async Task HandleSurgeonEditAsync(ITelegramBotClient bot, long chatId, int messageId, string appointmentId, CancellationToken ct)
         {
-            var surgeonKeyboard = await GenerateSurgeonSelectionKeyboardAsync();
+            var surgeonKeyboard = await GenerateSurgeonSelectionKeyboardAsync(chatId);
             
             await UpdateMessageKeyboardAsync(bot, chatId, messageId, surgeonKeyboard, ct);
             await MessageSender.SendWithRetry(chatId, "👨‍⚕️ Selecciona el cirujano:", cancellationToken: ct);
@@ -424,6 +629,14 @@ namespace RegistroCx.Services.UI
             await MessageSender.SendWithRetry(chatId, "📍 Selecciona el lugar:", cancellationToken: ct);
         }
 
+        private async Task HandleAnesthesiologistEditAsync(ITelegramBotClient bot, long chatId, int messageId, string appointmentId, CancellationToken ct)
+        {
+            var anesthesiologistKeyboard = await GenerateAnesthesiologistSelectionKeyboardAsync(chatId);
+            
+            await UpdateMessageKeyboardAsync(bot, chatId, messageId, anesthesiologistKeyboard, ct);
+            await MessageSender.SendWithRetry(chatId, "💉 Selecciona el anestesiólogo:", cancellationToken: ct);
+        }
+
         private async Task HandleSetDateAsync(ITelegramBotClient bot, long chatId, int messageId, string parameter, CancellationToken ct)
         {
             var parts = parameter.Split('_');
@@ -434,12 +647,35 @@ namespace RegistroCx.Services.UI
                 
                 if (DateTime.TryParse(dateStr, out var newDate))
                 {
-                    await MessageSender.SendWithRetry(chatId, $"📅 Fecha actualizada a: {newDate:dd/MM/yyyy}", cancellationToken: ct);
+                    // Update appointment in pending appointments if available
+                    if (_pendingAppointments != null && _pendingAppointments.TryGetValue(chatId, out var appointment))
+                    {
+                        // Mantener la hora existente, solo cambiar fecha
+                        if (appointment.FechaHora.HasValue)
+                        {
+                            var time = appointment.FechaHora.Value.TimeOfDay;
+                            appointment.FechaHora = newDate.Date.Add(time);
+                        }
+                        else
+                        {
+                            appointment.FechaHora = newDate;
+                        }
+                        
+                        // Show updated appointment with confirmation buttons
+                        var confirmationKeyboard = GenerateConfirmationKeyboard(appointment);
+                        var appointmentText = FormatAppointmentForConfirmation(appointment);
+                        
+                        await MessageSender.SendWithRetry(chatId, 
+                            $"📅 Fecha actualizada a: {newDate:dd/MM/yyyy}\n\n{appointmentText}", 
+                            replyMarkup: confirmationKeyboard,
+                            cancellationToken: ct);
+                    }
+                    else
+                    {
+                        await MessageSender.SendWithRetry(chatId, $"📅 Fecha actualizada a: {newDate:dd/MM/yyyy}", cancellationToken: ct);
+                    }
                     
-                    // TODO: Update appointment in database
-                    // await _appointmentRepo.UpdateDateAsync(long.Parse(appointmentId), newDate, ct);
-                    
-                    // Remove inline keyboard
+                    // Remove inline keyboard from previous message
                     await UpdateMessageKeyboardAsync(bot, chatId, messageId, new InlineKeyboardMarkup(Array.Empty<InlineKeyboardButton[]>()), ct);
                 }
             }
@@ -453,34 +689,273 @@ namespace RegistroCx.Services.UI
                 var appointmentId = parts[0];
                 var timeStr = parts[1];
                 
-                await MessageSender.SendWithRetry(chatId, $"🕒 Hora actualizada a: {timeStr}", cancellationToken: ct);
+                // Update appointment in pending appointments if available
+                if (_pendingAppointments != null && _pendingAppointments.TryGetValue(chatId, out var appointment))
+                {
+                    if (TimeOnly.TryParse(timeStr, out var newTime))
+                    {
+                        // Mantener la fecha existente, solo cambiar hora
+                        if (appointment.FechaHora.HasValue)
+                        {
+                            var date = appointment.FechaHora.Value.Date;
+                            appointment.FechaHora = date.Add(newTime.ToTimeSpan());
+                        }
+                        else
+                        {
+                            appointment.FechaHora = DateTime.Today.Add(newTime.ToTimeSpan());
+                        }
+                        
+                        // Show updated appointment with confirmation buttons
+                        var confirmationKeyboard = GenerateConfirmationKeyboard(appointment);
+                        var appointmentText = FormatAppointmentForConfirmation(appointment);
+                        
+                        await MessageSender.SendWithRetry(chatId, 
+                            $"🕒 Hora actualizada a: {timeStr}\n\n{appointmentText}", 
+                            replyMarkup: confirmationKeyboard,
+                            cancellationToken: ct);
+                    }
+                    else
+                    {
+                        await MessageSender.SendWithRetry(chatId, $"❌ Error: hora inválida {timeStr}", cancellationToken: ct);
+                    }
+                }
+                else
+                {
+                    await MessageSender.SendWithRetry(chatId, $"🕒 Hora actualizada a: {timeStr}", cancellationToken: ct);
+                }
                 
-                // TODO: Update appointment in database
-                // await _appointmentRepo.UpdateTimeAsync(long.Parse(appointmentId), TimeOnly.Parse(timeStr), ct);
-                
-                // Remove inline keyboard
+                // Remove inline keyboard from previous message
                 await UpdateMessageKeyboardAsync(bot, chatId, messageId, new InlineKeyboardMarkup(Array.Empty<InlineKeyboardButton[]>()), ct);
             }
         }
 
         private async Task HandleSetSurgeonAsync(ITelegramBotClient bot, long chatId, int messageId, string surgeonName, CancellationToken ct)
         {
-            await MessageSender.SendWithRetry(chatId, $"👨‍⚕️ Cirujano actualizado a: {surgeonName}", cancellationToken: ct);
+            // Update appointment in pending appointments if available
+            if (_pendingAppointments != null && _pendingAppointments.TryGetValue(chatId, out var appointment))
+            {
+                appointment.Cirujano = surgeonName;
+                
+                // Show updated appointment with confirmation buttons
+                var confirmationKeyboard = GenerateConfirmationKeyboard(appointment);
+                var appointmentText = FormatAppointmentForConfirmation(appointment);
+                
+                await MessageSender.SendWithRetry(chatId, 
+                    $"👨‍⚕️ Cirujano actualizado a: {surgeonName}\n\n{appointmentText}", 
+                    replyMarkup: confirmationKeyboard,
+                    cancellationToken: ct);
+            }
+            else
+            {
+                await MessageSender.SendWithRetry(chatId, $"👨‍⚕️ Cirujano actualizado a: {surgeonName}", cancellationToken: ct);
+            }
             
-            // TODO: Update appointment in database
-            // await _appointmentRepo.UpdateSurgeonAsync(appointmentId, surgeonName, ct);
-            
-            // Remove inline keyboard
+            // Remove inline keyboard from previous message
             await UpdateMessageKeyboardAsync(bot, chatId, messageId, new InlineKeyboardMarkup(Array.Empty<InlineKeyboardButton[]>()), ct);
         }
 
         private async Task HandleSetLocationAsync(ITelegramBotClient bot, long chatId, int messageId, string locationName, CancellationToken ct)
         {
-            await MessageSender.SendWithRetry(chatId, $"📍 Lugar actualizado a: {locationName}", cancellationToken: ct);
+            // Update appointment in pending appointments if available
+            if (_pendingAppointments != null && _pendingAppointments.TryGetValue(chatId, out var appointment))
+            {
+                appointment.Lugar = locationName;
+                
+                // Show updated appointment with confirmation buttons
+                var confirmationKeyboard = GenerateConfirmationKeyboard(appointment);
+                var appointmentText = FormatAppointmentForConfirmation(appointment);
+                
+                await MessageSender.SendWithRetry(chatId, 
+                    $"📍 Lugar actualizado a: {locationName}\n\n{appointmentText}", 
+                    replyMarkup: confirmationKeyboard,
+                    cancellationToken: ct);
+            }
+            else
+            {
+                await MessageSender.SendWithRetry(chatId, $"📍 Lugar actualizado a: {locationName}", cancellationToken: ct);
+            }
             
-            // TODO: Update appointment in database
-            // await _appointmentRepo.UpdateLocationAsync(appointmentId, locationName, ct);
+            // Remove inline keyboard from previous message
+            await UpdateMessageKeyboardAsync(bot, chatId, messageId, new InlineKeyboardMarkup(Array.Empty<InlineKeyboardButton[]>()), ct);
+        }
+
+        private async Task HandleSetAnesthesiologistAsync(ITelegramBotClient bot, long chatId, int messageId, string anesthesiologistName, CancellationToken ct)
+        {
+            // Update appointment in pending appointments if available
+            if (_pendingAppointments != null && _pendingAppointments.TryGetValue(chatId, out var appointment))
+            {
+                appointment.Anestesiologo = anesthesiologistName;
+                
+                // Show updated appointment with confirmation buttons
+                var confirmationKeyboard = GenerateConfirmationKeyboard(appointment);
+                var appointmentText = FormatAppointmentForConfirmation(appointment);
+                
+                await MessageSender.SendWithRetry(chatId, 
+                    $"💉 Anestesiólogo actualizado a: {anesthesiologistName}\n\n{appointmentText}", 
+                    replyMarkup: confirmationKeyboard,
+                    cancellationToken: ct);
+            }
+            else
+            {
+                await MessageSender.SendWithRetry(chatId, $"💉 Anestesiólogo actualizado a: {anesthesiologistName}", cancellationToken: ct);
+            }
             
+            // Remove inline keyboard from previous message
+            await UpdateMessageKeyboardAsync(bot, chatId, messageId, new InlineKeyboardMarkup(Array.Empty<InlineKeyboardButton[]>()), ct);
+        }
+
+        private async Task HandleNoAnesthesiologistAsync(ITelegramBotClient bot, long chatId, int messageId, CancellationToken ct)
+        {
+            await MessageSender.SendWithRetry(chatId, "🚫 Anestesiólogo removido (sin anestesiólogo)", cancellationToken: ct);
+            
+            // TODO: Update appointment in database to remove anesthesiologist
+            // await _appointmentRepo.UpdateAnesthesiologistAsync(appointmentId, null, ct);
+            
+            // Remove inline keyboard
+            await UpdateMessageKeyboardAsync(bot, chatId, messageId, new InlineKeyboardMarkup(Array.Empty<InlineKeyboardButton[]>()), ct);
+        }
+
+        private async Task HandleOtherAnesthesiologistAsync(ITelegramBotClient bot, long chatId, int messageId, CancellationToken ct)
+        {
+            // Set pending edit state
+            _pendingEdits[chatId] = ("anesthesiologist", 0); // appointmentId will be extracted from context
+            
+            await MessageSender.SendWithRetry(chatId, "💉 Escribí el nombre del anestesiólogo:", cancellationToken: ct);
+            
+            // Remove inline keyboard
+            await UpdateMessageKeyboardAsync(bot, chatId, messageId, new InlineKeyboardMarkup(Array.Empty<InlineKeyboardButton[]>()), ct);
+        }
+
+        private async Task HandleSurgeryEditAsync(ITelegramBotClient bot, long chatId, int messageId, string appointmentId, CancellationToken ct)
+        {
+            var surgeryKeyboard = await GenerateSurgerySelectionKeyboardAsync();
+            
+            await UpdateMessageKeyboardAsync(bot, chatId, messageId, surgeryKeyboard, ct);
+            await MessageSender.SendWithRetry(chatId, "🔬 Selecciona el tipo de cirugía:", cancellationToken: ct);
+        }
+
+        private async Task HandleSetSurgeryAsync(ITelegramBotClient bot, long chatId, int messageId, string surgeryType, CancellationToken ct)
+        {
+            // Update appointment in pending appointments if available
+            if (_pendingAppointments != null && _pendingAppointments.TryGetValue(chatId, out var appointment))
+            {
+                appointment.Cirugia = surgeryType;
+                
+                // Show updated appointment with confirmation buttons
+                var confirmationKeyboard = GenerateConfirmationKeyboard(appointment);
+                var appointmentText = FormatAppointmentForConfirmation(appointment);
+                
+                await MessageSender.SendWithRetry(chatId, 
+                    $"🔬 Cirugía actualizada a: {surgeryType}\n\n{appointmentText}", 
+                    replyMarkup: confirmationKeyboard,
+                    cancellationToken: ct);
+            }
+            else
+            {
+                await MessageSender.SendWithRetry(chatId, $"🔬 Cirugía actualizada a: {surgeryType}", cancellationToken: ct);
+            }
+            
+            // Remove inline keyboard from previous message
+            await UpdateMessageKeyboardAsync(bot, chatId, messageId, new InlineKeyboardMarkup(Array.Empty<InlineKeyboardButton[]>()), ct);
+        }
+
+        private async Task HandleOtherSurgeryAsync(ITelegramBotClient bot, long chatId, int messageId, CancellationToken ct)
+        {
+            // Set pending edit state
+            _pendingEdits[chatId] = ("surgery", 0); // appointmentId will be extracted from context
+            
+            await MessageSender.SendWithRetry(chatId, "🔬 Escribí el tipo de cirugía:", cancellationToken: ct);
+            
+            // Remove inline keyboard
+            await UpdateMessageKeyboardAsync(bot, chatId, messageId, new InlineKeyboardMarkup(Array.Empty<InlineKeyboardButton[]>()), ct);
+        }
+
+        private async Task HandleQuantityEditAsync(ITelegramBotClient bot, long chatId, int messageId, string appointmentId, CancellationToken ct)
+        {
+            var appointment = new Appointment { Id = long.Parse(appointmentId) };
+            var quantityKeyboard = GenerateQuantitySelectionKeyboard(appointment);
+            
+            await UpdateMessageKeyboardAsync(bot, chatId, messageId, quantityKeyboard, ct);
+            await MessageSender.SendWithRetry(chatId, "🔢 Selecciona la cantidad:", cancellationToken: ct);
+        }
+
+        private async Task HandleSetQuantityAsync(ITelegramBotClient bot, long chatId, int messageId, string parameter, CancellationToken ct)
+        {
+            var parts = parameter.Split('_');
+            if (parts.Length >= 2)
+            {
+                var appointmentId = parts[0];
+                var quantity = parts[1];
+                
+                // Update appointment in pending appointments if available
+                if (_pendingAppointments != null && _pendingAppointments.TryGetValue(chatId, out var appointment))
+                {
+                    appointment.Cantidad = int.Parse(quantity);
+                    
+                    // Show updated appointment with confirmation buttons
+                    var confirmationKeyboard = GenerateConfirmationKeyboard(appointment);
+                    var appointmentText = FormatAppointmentForConfirmation(appointment);
+                    
+                    await MessageSender.SendWithRetry(chatId, 
+                        $"🔢 Cantidad actualizada a: {quantity}\n\n{appointmentText}", 
+                        replyMarkup: confirmationKeyboard,
+                        cancellationToken: ct);
+                }
+                else
+                {
+                    await MessageSender.SendWithRetry(chatId, $"🔢 Cantidad actualizada a: {quantity}", cancellationToken: ct);
+                }
+                
+                // Remove inline keyboard from previous message
+                await UpdateMessageKeyboardAsync(bot, chatId, messageId, new InlineKeyboardMarkup(Array.Empty<InlineKeyboardButton[]>()), ct);
+            }
+        }
+
+        private async Task HandleOtherQuantityAsync(ITelegramBotClient bot, long chatId, int messageId, CancellationToken ct)
+        {
+            await MessageSender.SendWithRetry(chatId, "🔢 Escribí la cantidad de cirugías:", cancellationToken: ct);
+            
+            // TODO: Set state to capture quantity input
+            // Remove inline keyboard
+            await UpdateMessageKeyboardAsync(bot, chatId, messageId, new InlineKeyboardMarkup(Array.Empty<InlineKeyboardButton[]>()), ct);
+        }
+
+        private async Task HandleOtherSurgeonAsync(ITelegramBotClient bot, long chatId, int messageId, CancellationToken ct)
+        {
+            // Set pending edit state
+            _pendingEdits[chatId] = ("surgeon", 0); // appointmentId will be extracted from context
+            
+            await MessageSender.SendWithRetry(chatId, "👨‍⚕️ Escribí el nombre del cirujano:", cancellationToken: ct);
+            
+            // Remove inline keyboard
+            await UpdateMessageKeyboardAsync(bot, chatId, messageId, new InlineKeyboardMarkup(Array.Empty<InlineKeyboardButton[]>()), ct);
+        }
+
+        private async Task HandleOtherLocationAsync(ITelegramBotClient bot, long chatId, int messageId, CancellationToken ct)
+        {
+            // Set pending edit state
+            _pendingEdits[chatId] = ("location", 0); // appointmentId will be extracted from context
+            
+            await MessageSender.SendWithRetry(chatId, "📍 Escribí el nombre del lugar:", cancellationToken: ct);
+            
+            // Remove inline keyboard
+            await UpdateMessageKeyboardAsync(bot, chatId, messageId, new InlineKeyboardMarkup(Array.Empty<InlineKeyboardButton[]>()), ct);
+        }
+
+        private async Task HandleOtherDateAsync(ITelegramBotClient bot, long chatId, int messageId, CancellationToken ct)
+        {
+            await MessageSender.SendWithRetry(chatId, "📅 Escribí la nueva fecha (ej: 25/12, mañana, el lunes):", cancellationToken: ct);
+            
+            // TODO: Set state to capture date input
+            // Remove inline keyboard
+            await UpdateMessageKeyboardAsync(bot, chatId, messageId, new InlineKeyboardMarkup(Array.Empty<InlineKeyboardButton[]>()), ct);
+        }
+
+        private async Task HandleOtherTimeAsync(ITelegramBotClient bot, long chatId, int messageId, CancellationToken ct)
+        {
+            await MessageSender.SendWithRetry(chatId, "🕒 Escribí la nueva hora (ej: 14:30, 8hs, 16 de la tarde):", cancellationToken: ct);
+            
+            // TODO: Set state to capture time input
             // Remove inline keyboard
             await UpdateMessageKeyboardAsync(bot, chatId, messageId, new InlineKeyboardMarkup(Array.Empty<InlineKeyboardButton[]>()), ct);
         }
@@ -491,6 +966,22 @@ namespace RegistroCx.Services.UI
             var confirmationKeyboard = GenerateConfirmationKeyboard(appointment);
             
             await UpdateMessageKeyboardAsync(bot, chatId, messageId, confirmationKeyboard, ct);
+        }
+
+        private async Task HandleBackEditAsync(ITelegramBotClient bot, long chatId, int messageId, CancellationToken ct)
+        {
+            // For back_edit, try to get the appointment from pending appointments
+            if (_pendingAppointments?.Values.FirstOrDefault() is { } appointment)
+            {
+                var editKeyboard = GenerateEditKeyboard(appointment);
+                await UpdateMessageKeyboardAsync(bot, chatId, messageId, editKeyboard, ct);
+            }
+            else
+            {
+                // No appointment context, just remove keyboard
+                await UpdateMessageKeyboardAsync(bot, chatId, messageId, new InlineKeyboardMarkup(Array.Empty<InlineKeyboardButton[]>()), ct);
+                await MessageSender.SendWithRetry(chatId, "⬅️ Volviendo al menú principal.", cancellationToken: ct);
+            }
         }
 
         public Task<InlineKeyboardMarkup> CreateModificationKeyboard(Appointment appointment)
@@ -566,7 +1057,7 @@ namespace RegistroCx.Services.UI
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Error handling modify field callback for chat {ChatId}", chatId);
-                await MessageSender.SendWithRetry(chatId, "❌ Error procesando la modificación. Escribí **\"cancelar\"** para empezar de nuevo.", cancellationToken: ct);
+                await MessageSender.SendWithRetry(chatId, "❌ Error procesando la modificación. Escribí <b>\"cancelar\"</b> para empezar de nuevo.", cancellationToken: ct);
             }
         }
         
@@ -668,6 +1159,122 @@ namespace RegistroCx.Services.UI
                 _logger.LogError(ex, "Error handling help option {Option} for chat {ChatId}", option, chatId);
                 await MessageSender.SendWithRetry(chatId, "❌ Error mostrando la ayuda. Escribí <b>/ayuda</b> para intentar de nuevo.", cancellationToken: ct);
             }
+        }
+
+        // Method to handle text input when user has pending edit state
+        public async Task<bool> TryHandleTextInputAsync(ITelegramBotClient bot, long chatId, string text, CancellationToken ct)
+        {
+            if (!_pendingEdits.TryGetValue(chatId, out var pendingEdit))
+            {
+                return false; // No pending edit state
+            }
+
+            // Remove the pending state
+            _pendingEdits.Remove(chatId);
+
+            try
+            {
+                // Get the most recent appointment for this user to edit
+                var appointment = await GetMostRecentAppointmentForUserAsync(chatId, ct);
+                if (appointment == null)
+                {
+                    await MessageSender.SendWithRetry(chatId, "❌ No se encontró una cita para modificar.", cancellationToken: ct);
+                    return true;
+                }
+
+                // Apply the edit based on the action
+                switch (pendingEdit.action)
+                {
+                    case "anesthesiologist":
+                        await ApplyAnesthesiologistEditAsync(bot, chatId, appointment, text, ct);
+                        break;
+                    case "surgeon":
+                        await ApplySurgeonEditAsync(bot, chatId, appointment, text, ct);
+                        break;
+                    case "surgery":
+                        await ApplySurgeryEditAsync(bot, chatId, appointment, text, ct);
+                        break;
+                    case "location":
+                        await ApplyLocationEditAsync(bot, chatId, appointment, text, ct);
+                        break;
+                    default:
+                        await MessageSender.SendWithRetry(chatId, "❌ Opción no válida.", cancellationToken: ct);
+                        break;
+                }
+
+                return true;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error processing text input for chat {ChatId}, action {Action}", chatId, pendingEdit.action);
+                await MessageSender.SendWithRetry(chatId, "❌ Error procesando la entrada. Por favor, intenta de nuevo.", cancellationToken: ct);
+                return true;
+            }
+        }
+
+        private Task<Appointment?> GetMostRecentAppointmentForUserAsync(long chatId, CancellationToken ct)
+        {
+            // Check in pending appointments first
+            if (_pendingAppointments?.Values.FirstOrDefault(a => true) is { } pendingAppt)
+            {
+                return Task.FromResult<Appointment?>(pendingAppt);
+            }
+
+            // TODO: Get from appointment repository if needed
+            // For now, this is a placeholder - the appointment context should be tracked better
+            return Task.FromResult<Appointment?>(null);
+        }
+
+        private async Task ApplyAnesthesiologistEditAsync(ITelegramBotClient bot, long chatId, Appointment appointment, string anesthesiologistName, CancellationToken ct)
+        {
+            appointment.Anestesiologo = anesthesiologistName.Trim();
+            
+            var appointmentText = FormatAppointmentForConfirmation(appointment);
+            var confirmKeyboard = GenerateConfirmationKeyboard(appointment);
+            
+            await MessageSender.SendWithRetry(chatId,
+                $"💉 Anestesiólogo actualizado a: {anesthesiologistName}\n\n{appointmentText}", 
+                replyMarkup: confirmKeyboard, 
+                cancellationToken: ct);
+        }
+
+        private async Task ApplySurgeonEditAsync(ITelegramBotClient bot, long chatId, Appointment appointment, string surgeonName, CancellationToken ct)
+        {
+            appointment.Cirujano = surgeonName.Trim();
+            
+            var appointmentText = FormatAppointmentForConfirmation(appointment);
+            var confirmKeyboard = GenerateConfirmationKeyboard(appointment);
+            
+            await MessageSender.SendWithRetry(chatId,
+                $"👨‍⚕️ Cirujano actualizado a: {surgeonName}\n\n{appointmentText}", 
+                replyMarkup: confirmKeyboard, 
+                cancellationToken: ct);
+        }
+
+        private async Task ApplySurgeryEditAsync(ITelegramBotClient bot, long chatId, Appointment appointment, string surgeryType, CancellationToken ct)
+        {
+            appointment.Cirugia = surgeryType.Trim();
+            
+            var appointmentText = FormatAppointmentForConfirmation(appointment);
+            var confirmKeyboard = GenerateConfirmationKeyboard(appointment);
+            
+            await MessageSender.SendWithRetry(chatId,
+                $"🔬 Cirugía actualizada a: {surgeryType}\n\n{appointmentText}", 
+                replyMarkup: confirmKeyboard, 
+                cancellationToken: ct);
+        }
+
+        private async Task ApplyLocationEditAsync(ITelegramBotClient bot, long chatId, Appointment appointment, string location, CancellationToken ct)
+        {
+            appointment.Lugar = location.Trim();
+            
+            var appointmentText = FormatAppointmentForConfirmation(appointment);
+            var confirmKeyboard = GenerateConfirmationKeyboard(appointment);
+            
+            await MessageSender.SendWithRetry(chatId,
+                $"📍 Lugar actualizado a: {location}\n\n{appointmentText}", 
+                replyMarkup: confirmKeyboard, 
+                cancellationToken: ct);
         }
     }
 }

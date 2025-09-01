@@ -7,11 +7,11 @@ using NpgsqlTypes;
 
 namespace RegistroCx.Services.Repositories;
 
-public class AnesthesiologistRepository : IAnesthesiologistRepository
+public class SurgeonRepository : ISurgeonRepository
 {
     private readonly string _connString;
     
-    public AnesthesiologistRepository(string connString) => _connString = connString;
+    public SurgeonRepository(string connString) => _connString = connString;
 
     private async Task<NpgsqlConnection> OpenAsync(CancellationToken ct)
     {
@@ -50,7 +50,7 @@ public class AnesthesiologistRepository : IAnesthesiologistRepository
         // Buscar por coincidencia en nombre + apellido (case insensitive)
         const string sql = @"
             SELECT email 
-            FROM anestesiologos 
+            FROM cirujanos 
             WHERE LOWER(CONCAT(nombre, ' ', apellido)) = LOWER(@fullName)
             OR LOWER(CONCAT(apellido, ' ', nombre)) = LOWER(@fullName)
             LIMIT 1;";
@@ -65,7 +65,7 @@ public class AnesthesiologistRepository : IAnesthesiologistRepository
         // Buscar en el array de nicknames
         const string sql = @"
             SELECT email 
-            FROM anestesiologos 
+            FROM cirujanos 
             WHERE LOWER(@nickname) = ANY(SELECT LOWER(unnest(nicknames)))
             LIMIT 1;";
 
@@ -77,7 +77,7 @@ public class AnesthesiologistRepository : IAnesthesiologistRepository
     public async Task SaveAsync(string nombre, string apellido, string email, CancellationToken ct)
     {
         const string sql = @"
-            INSERT INTO anestesiologos (nombre, apellido, email) 
+            INSERT INTO cirujanos (nombre, apellido, email) 
             VALUES (@nombre, @apellido, @email)
             ON CONFLICT (email) 
             DO UPDATE SET 
@@ -89,24 +89,24 @@ public class AnesthesiologistRepository : IAnesthesiologistRepository
             new CommandDefinition(sql, new { nombre, apellido, email }, cancellationToken: ct));
     }
 
-    public async Task AddNicknameAsync(long anesthesiologistId, string nickname, CancellationToken ct)
+    public async Task AddNicknameAsync(long surgeonId, string nickname, CancellationToken ct)
     {
         const string sql = @"
-            UPDATE anestesiologos 
+            UPDATE cirujanos 
             SET nicknames = array_append(nicknames, @nickname)
-            WHERE id = @anesthesiologistId
+            WHERE id = @surgeonId
             AND NOT (@nickname = ANY(nicknames));"; // Evitar duplicados
 
         await using var conn = await OpenAsync(ct);
         await conn.ExecuteAsync(
-            new CommandDefinition(sql, new { anesthesiologistId, nickname }, cancellationToken: ct));
+            new CommandDefinition(sql, new { surgeonId, nickname }, cancellationToken: ct));
     }
 
     public async Task<List<string>> GetNamesByEquipoAsync(int equipoId, CancellationToken ct)
     {
         const string sql = @"
             SELECT CONCAT(nombre, ' ', apellido) as full_name
-            FROM anestesiologos 
+            FROM cirujanos 
             WHERE equipo_id = @equipoId
             ORDER BY LOWER(apellido), LOWER(nombre);";
 

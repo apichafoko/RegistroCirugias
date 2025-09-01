@@ -2,22 +2,34 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text.RegularExpressions;
+using System.Threading;
+using System.Threading.Tasks;
+using RegistroCx.Services.Extraction;
 
 namespace RegistroCx.Helpers;
 
 /// <summary>
 /// Validador que detecta si un texto tiene contexto médico/quirúrgico relevante
 /// </summary>
-public static class MedicalContextValidator
+public class MedicalContextValidator
 {
-    // Palabras clave médicas/quirúrgicas que indican contexto relevante
+    private readonly LLMOpenAIAssistant _llm;
+    
+    public MedicalContextValidator(LLMOpenAIAssistant llm)
+    {
+        _llm = llm;
+    }
+
+    // Fallback: Palabras clave médicas/quirúrgicas básicas para casos de emergencia
     private static readonly HashSet<string> MedicalKeywords = new(StringComparer.OrdinalIgnoreCase)
     {
         // Procedimientos quirúrgicos
         "cers", "mld", "adenoides", "amigdalas", "amígdalas", "cesarea", "cesárea", 
         "apendicectomia", "apendicectomía", "colecistectomia", "colecistectomía", 
         "hernia", "hernioplastia", "hernioplastía", "laparoscopia", "laparoscopía",
-        "artroscopia", "artroscopía", "endoscopia", "endoscopía", "biopsia",
+        "artroscopia", "artroscopía", "endoscopia", "endoscopía", "endoscopicas", "endoscópicas",
+        "ondoscopia", "ondoscopía", "ondoscopicas", "ondoscópicas", "biopsia",
+        "nariz", "nasal", "nasales", "septoplastia", "septoplastía", "rinoplastia", "rinoplastía",
         "cirugía", "cirugia", "operacion", "operación", "quirofano", "quirófano",
         "intervencion", "intervención", "procedimiento", "extirpacion", "extirpación",
         
@@ -31,7 +43,7 @@ public static class MedicalContextValidator
         "hospital", "clinica", "clínica", "sanatorio", "centro", "medico", "médico",
         "quirofano", "quirófano", "sala", "pabellon", "pabellón", "instituto",
         "italiano", "aleman", "alemán", "britanico", "británico", "finochietto",
-        "anchorena", "mater", "dei", "favaloro", "fleni",
+        "anchorena", "mater", "dei", "favaloro", "fleni", "callao",
         
         // Términos temporales médicos comunes
         "cirugia", "cirugía", "operación", "operacion", "programar", "agendar",
@@ -66,13 +78,34 @@ public static class MedicalContextValidator
     };
 
     /// <summary>
-    /// Determina si el texto contiene contexto médico/quirúrgico relevante
+    /// Determina si el texto contiene contexto médico/quirúrgico relevante usando LLM
     /// </summary>
-    public static bool HasMedicalContext(string input)
+    public async Task<bool> HasMedicalContextAsync(string input, CancellationToken ct = default)
     {
         if (string.IsNullOrWhiteSpace(input))
             return false;
 
+        try
+        {
+            // Usar LLM para detectar contexto médico usando prompt publicado
+            var response = await _llm.GetCompletionAsync(input, ct);
+            var cleanResponse = response?.Trim().ToUpperInvariant();
+            
+            return cleanResponse == "SI" || cleanResponse == "SÍ" || cleanResponse == "YES";
+        }
+        catch (Exception ex)
+        {
+            // Fallback a método anterior si falla el LLM
+            Console.WriteLine($"[MEDICAL-VALIDATOR] LLM failed, using fallback: {ex.Message}");
+            return HasMedicalContextFallback(input);
+        }
+    }
+
+    /// <summary>
+    /// Método fallback usando palabras clave si el LLM falla
+    /// </summary>
+    private bool HasMedicalContextFallback(string input)
+    {
         var normalizedInput = NormalizeText(input);
         var words = ExtractWords(normalizedInput);
 
@@ -94,7 +127,7 @@ public static class MedicalContextValidator
     /// <summary>
     /// Genera un mensaje de ayuda para texto no médico
     /// </summary>
-    public static string GenerateHelpMessage()
+    public string GenerateHelpMessage()
     {
         return "🤔 **No entiendo ese tipo de mensaje.**\n\n" +
                "📋 **Soy tu asistente de cirugías.** Puedo ayudarte con:\n\n" +
@@ -115,7 +148,7 @@ public static class MedicalContextValidator
     /// <summary>
     /// Genera un mensaje específico para texto claramente no médico
     /// </summary>
-    public static string GenerateNonMedicalMessage(string userInput)
+    public string GenerateNonMedicalMessage(string userInput)
     {
         var examples = new[]
         {
@@ -181,7 +214,7 @@ public static class MedicalContextValidator
     /// <summary>
     /// Detecta si el texto son solo palabras inconexas (como "perro verde", "edificio alto")
     /// </summary>
-    public static bool IsDisconnectedWords(string input)
+    public bool IsDisconnectedWords(string input)
     {
         if (string.IsNullOrWhiteSpace(input))
             return false;
@@ -192,8 +225,8 @@ public static class MedicalContextValidator
         if (words.Count < 2)
             return false;
 
-        // Si tiene contexto médico, no es inconexo para nuestros propósitos
-        if (HasMedicalContext(input))
+        // Si tiene contexto médico, no es inconexo para nuestros propósitos  
+        if (HasMedicalContextFallback(input))
             return false;
 
         // Si tiene patrones de fecha/hora/números, podría ser relevante

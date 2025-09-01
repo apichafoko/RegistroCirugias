@@ -114,7 +114,7 @@ namespace RegistroCx.Services.Context
                     $"✏️ Creo que estábamos cambiando algunos datos de una cirugía{GetProgressDetails(context)}",
                 
                 ContextType.FieldWizard => 
-                    $"📝 Te estaba preguntando por **{GetFieldHumanName(context.CurrentField)}** para completar todo{GetProgressDetails(context)}",
+                    $"📝 Te estaba preguntando por <b>{GetFieldHumanName(context.CurrentField)}</b> para completar todo{GetProgressDetails(context)}",
                 
                 ContextType.Confirming => 
                     $"✅ Estaba esperando que me digas si los datos están bien{GetProgressDetails(context)}",

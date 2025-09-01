@@ -9,6 +9,7 @@ using RegistroCx.ProgramServices.Services.Telegram;
 using RegistroCx.Services.Analytics;
 using RegistroCx.Services.Caching;
 using RegistroCx.Services.UI;
+using RegistroCx.Helpers;
 using RegistroCx.Services.Context;
 using RegistroCx.models;
 using System.Text.RegularExpressions;
@@ -78,6 +79,9 @@ public class CirugiaFlowService
     
     // Sistema de equipos
     private readonly EquipoService _equipoService;
+    
+    // Validación de contexto médico
+    private readonly MedicalContextValidator _medicalValidator;
 
     public CirugiaFlowService(
         LLMOpenAIAssistant llm, 
@@ -98,7 +102,8 @@ public class CirugiaFlowService
         ICacheService cache,
         IQuickEditService quickEdit,
         IConversationContextManager contextManager,
-        EquipoService equipoService)
+        EquipoService equipoService,
+        MedicalContextValidator medicalValidator)
     {
         _llm = llm;
         _pending = pending;
@@ -114,6 +119,7 @@ public class CirugiaFlowService
         _quickEdit = quickEdit;
         _contextManager = contextManager;
         _equipoService = equipoService;
+        _medicalValidator = medicalValidator;
         _stateManager = new FlowStateManager(_pending);
         _messageHandler = new FlowMessageHandler(oauthService, userRepo, calendarSync, appointmentRepo, reportService, quickEdit);
         _wizardHandler = new FlowWizardHandler(anesthesiologistSearchService, userRepo, analytics, quickEdit);
@@ -135,6 +141,13 @@ public class CirugiaFlowService
             Console.WriteLine("[FLOW] 🚫 Cancel command detected, clearing context");
             _stateManager.ClearContext(chatId);
             await MessageSender.SendWithRetry(chatId, "❌ Operación cancelada. Podés empezar de nuevo enviando los datos de tu cirugía.", cancellationToken: ct);
+            return;
+        }
+
+        // PRIORIDAD: Verificar si QuickEditService puede manejar el texto (estados de edición)
+        if (await _quickEdit.TryHandleTextInputAsync(bot, chatId, rawText, ct))
+        {
+            // Texto manejado por estado de edición, no continuar
             return;
         }
 
@@ -258,20 +271,20 @@ public class CirugiaFlowService
         Console.WriteLine("[FLOW] Going to LLM - no other handler processed the message");
         
         // VALIDACIÓN: Verificar si el texto tiene contexto médico relevante
-        if (!RegistroCx.Helpers.MedicalContextValidator.HasMedicalContext(rawText))
+        if (!await _medicalValidator.HasMedicalContextAsync(rawText, ct))
         {
             Console.WriteLine($"[FLOW] ❌ Non-medical context detected: {rawText}");
             
             // Si es texto claramente inconexo (como "perro verde"), dar mensaje específico
-            if (RegistroCx.Helpers.MedicalContextValidator.IsDisconnectedWords(rawText))
+            if (_medicalValidator.IsDisconnectedWords(rawText))
             {
-                var specificMessage = RegistroCx.Helpers.MedicalContextValidator.GenerateNonMedicalMessage(rawText);
+                var specificMessage = _medicalValidator.GenerateNonMedicalMessage(rawText);
                 await MessageSender.SendWithRetry(chatId, specificMessage, cancellationToken: ct);
             }
             else
             {
                 // Para otros casos, mostrar ayuda general
-                var helpMessage = RegistroCx.Helpers.MedicalContextValidator.GenerateHelpMessage();
+                var helpMessage = _medicalValidator.GenerateHelpMessage();
                 await MessageSender.SendWithRetry(chatId, helpMessage, cancellationToken: ct);
             }
             

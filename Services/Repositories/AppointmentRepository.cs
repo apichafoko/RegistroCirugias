@@ -296,7 +296,7 @@ public class AppointmentRepository : IAppointmentRepository
     public async Task<List<Appointment>> GetPendingCalendarSyncAsync(int equipoId, CancellationToken ct)
     {
         const string sql = @"
-            SELECT id, equipo_id, chat_id, user_profile_id, google_email, fecha_hora, lugar, cirujano, cirugia, cantidad, anestesiologo, calendar_event_id, calendar_synced_at, reminder_sent_at, created_at
+            SELECT id, equipo_id, user_profile_id, google_email, fecha_hora, lugar, cirujano, cirugia, cantidad, anestesiologo, calendar_event_id, calendar_synced_at, reminder_sent_at, created_at
             FROM appointments 
             WHERE equipo_id = @equipoId AND calendar_event_id IS NULL
             ORDER BY fecha_hora";
@@ -308,7 +308,6 @@ public class AppointmentRepository : IAppointmentRepository
         {
             Id = r.id,
             EquipoId = r.equipo_id,
-            ChatId = r.chat_id,
             UserProfileId = r.user_profile_id,
             GoogleEmail = r.google_email,
             FechaHora = r.fecha_hora,
@@ -326,7 +325,7 @@ public class AppointmentRepository : IAppointmentRepository
     public async Task<List<Appointment>> GetByEquipoAndDateRangeAsync(int equipoId, DateTime startDate, DateTime endDate, CancellationToken ct = default)
     {
         const string sql = @"
-            SELECT id, equipo_id, chat_id, user_profile_id, google_email, fecha_hora, lugar, cirujano, cirugia, cantidad, anestesiologo, calendar_event_id, calendar_synced_at, reminder_sent_at, created_at
+            SELECT id, equipo_id, user_profile_id, google_email, fecha_hora, lugar, cirujano, cirugia, cantidad, anestesiologo, calendar_event_id, calendar_synced_at, reminder_sent_at, created_at
             FROM appointments 
             WHERE equipo_id = @equipoId 
               AND fecha_hora >= @startDate 
@@ -340,7 +339,6 @@ public class AppointmentRepository : IAppointmentRepository
         {
             Id = r.id,
             EquipoId = r.equipo_id,
-            ChatId = r.chat_id,
             UserProfileId = r.user_profile_id,
             GoogleEmail = r.google_email,
             FechaHora = r.fecha_hora,
@@ -431,7 +429,7 @@ public class AppointmentRepository : IAppointmentRepository
         const string sql = @"
             UPDATE appointments 
             SET equipo_id = @equipoId 
-            WHERE chat_id = @chatId AND equipo_id IS NULL";
+            WHERE user_profile_id = (SELECT id FROM user_profiles WHERE chat_id = @chatId) AND equipo_id IS NULL";
 
         await using var conn = await OpenAsync(ct);
         await conn.ExecuteAsync(sql, new { chatId, equipoId });
@@ -452,7 +450,6 @@ public class AppointmentRepository : IAppointmentRepository
         {
             Id = r.id,
             EquipoId = r.equipo_id,
-            ChatId = r.chat_id,
             UserProfileId = r.user_profile_id,
             GoogleEmail = r.google_email,
             FechaHora = r.fecha_hora,

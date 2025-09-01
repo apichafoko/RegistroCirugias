@@ -3,6 +3,16 @@ FROM mcr.microsoft.com/dotnet/aspnet:9.0 AS base
 WORKDIR /app
 EXPOSE 8080
 
+# Instalar dependencias para SkiaSharp en Linux
+RUN apt-get update && apt-get install -y \
+    libfontconfig1 \
+    libfreetype6 \
+    libgdi-plus \
+    libjpeg-dev \
+    libpng-dev \
+    libgif-dev \
+    && rm -rf /var/lib/apt/lists/*
+
 # Usar la imagen de SDK para build con versión específica
 FROM mcr.microsoft.com/dotnet/sdk:9.0 AS build
 WORKDIR /src

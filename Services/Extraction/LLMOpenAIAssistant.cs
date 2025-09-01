@@ -34,6 +34,10 @@ namespace RegistroCx.Services.Extraction
         // Prompt para parsing de modificaciones
         private const string ModificationParsingPromptId      = "pmpt_68a0f476cdac8196b067a86fd89d45200e7279f7018ae4c2"; 
         private const string ModificationParsingPromptVersion = "1";
+        
+        // Prompt para validación de contexto médico  
+        private const string MedicalValidationPromptId      = "pmpt_68b4fab83c488193be663108cbba406309d25333cda30cf9"; 
+        private const string MedicalValidationPromptVersion = "1";
 
         public LLMOpenAIAssistant(string apiKey)
         {
@@ -319,6 +323,69 @@ namespace RegistroCx.Services.Extraction
     /// <summary>
     /// Busca anestesiólogos por similitud usando el assistant
     /// </summary>
+    /// <summary>
+    /// Método para validar contexto médico usando prompt publicado
+    /// </summary>
+    public async Task<string> GetCompletionAsync(string userText, System.Threading.CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            var requestBody = new
+            {
+                prompt = new 
+                { 
+                    id = MedicalValidationPromptId, 
+                    version = MedicalValidationPromptVersion 
+                },
+                input = new { user_text = userText }
+            };
+
+            var json = JsonSerializer.Serialize(requestBody, _jsonOptions);
+            var content = new StringContent(json, Encoding.UTF8, "application/json");
+
+            var response = await _http.PostAsync("/v1/responses", content, cancellationToken);
+            
+            if (!response.IsSuccessStatusCode)
+            {
+                var error = await response.Content.ReadAsStringAsync();
+                throw new HttpRequestException($"OpenAI API error: {response.StatusCode} - {error}");
+            }
+
+            var responseJson = await response.Content.ReadAsStringAsync();
+            var doc = JsonDocument.Parse(responseJson);
+            
+            // Extraer respuesta del prompt publicado
+            if (doc.RootElement.TryGetProperty("output", out var outputArray) && 
+                outputArray.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var outputItem in outputArray.EnumerateArray())
+                {
+                    if (outputItem.TryGetProperty("type", out var typeProperty) &&
+                        typeProperty.GetString() == "message" &&
+                        outputItem.TryGetProperty("content", out var contentArray))
+                    {
+                        foreach (var contentItem in contentArray.EnumerateArray())
+                        {
+                            if (contentItem.TryGetProperty("type", out var contentType) &&
+                                contentType.GetString() == "output_text" &&
+                                contentItem.TryGetProperty("text", out var textProperty))
+                            {
+                                return textProperty.GetString() ?? "";
+                            }
+                        }
+                    }
+                }
+            }
+            
+            return "";
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[LLM] Error in GetCompletionAsync: {ex.Message}");
+            throw;
+        }
+    }
+
     public async Task<string> SearchAnesthesiologistAsync(string partialName, string teamEmail)
     {
         try
