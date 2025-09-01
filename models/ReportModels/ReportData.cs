@@ -42,6 +42,16 @@ public class ReportData
     public Dictionary<DateTime, int> DailySurgeriesTimeline { get; set; } = new(); // Para reporte semanal/mensual
     public Dictionary<int, int> MonthlySurgeriesTimeline { get; set; } = new(); // Para reporte anual (mes 1-12)
     
+    // Comparaciones con período anterior
+    public int? PreviousPeriodTotal { get; set; }
+    public double PercentageChange => PreviousPeriodTotal.HasValue && PreviousPeriodTotal > 0 
+        ? ((TotalSurgeries - PreviousPeriodTotal.Value) / (double)PreviousPeriodTotal.Value) * 100 
+        : 0;
+    public string ChangeDirection => PercentageChange > 0 ? "📈" : PercentageChange < 0 ? "📉" : "➡️";
+    
+    // Mapa de calor: [Día][Hora] = Cantidad
+    public Dictionary<DayOfWeek, Dictionary<int, int>> HeatmapData { get; set; } = new();
+    
     // Métodos helper para generar métricas
     public double AverageSurgeriesPerDay => Period.Type switch
     {

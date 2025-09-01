@@ -35,10 +35,7 @@ public class PdfGeneratorService
         var fileName = $"ReporteSemanal_{DateTime.Now:yyyy-MM-dd_HHmm}.pdf";
         var filePath = Path.Combine(_tempDirectory, fileName);
         
-        await Task.Run(() => 
-        {
-            CreateReportPdf(filePath, "Reporte Semanal", reportData);
-        }, ct);
+        await CreateReportPdfAsync(filePath, "Reporte Semanal", reportData, ct);
         
         return filePath;
     }
@@ -48,10 +45,7 @@ public class PdfGeneratorService
         var fileName = $"ReporteMensual_{reportData.Period.DisplayName.Replace(" ", "-")}_{DateTime.Now:yyyy-MM-dd_HHmm}.pdf";
         var filePath = Path.Combine(_tempDirectory, fileName);
         
-        await Task.Run(() => 
-        {
-            CreateReportPdf(filePath, "Reporte Mensual", reportData);
-        }, ct);
+        await CreateReportPdfAsync(filePath, "Reporte Mensual", reportData, ct);
         
         return filePath;
     }
@@ -61,18 +55,54 @@ public class PdfGeneratorService
         var fileName = $"ReporteAnual_{reportData.Period.DisplayName.Replace(" ", "-")}_{DateTime.Now:yyyy-MM-dd_HHmm}.pdf";
         var filePath = Path.Combine(_tempDirectory, fileName);
         
-        await Task.Run(() => 
-        {
-            CreateReportPdf(filePath, "Reporte Anual", reportData);
-        }, ct);
+        await CreateReportPdfAsync(filePath, "Reporte Anual", reportData, ct);
         
         return filePath;
     }
 
-    private void CreateReportPdf(string filePath, string reportTitle, ReportData reportData)
+    private async Task CreateReportPdfAsync(string filePath, string reportTitle, ReportData reportData, CancellationToken ct = default)
     {
+        // Pre-generar todos los gráficos de forma asíncrona
+        byte[]? surgeryTypeChart = null;
+        byte[]? surgeonVolumeChart = null;
+        byte[]? timelineChart = null;
+        byte[]? heatmapChart = null;
+        
+        try
+        {
+            if (reportData.SurgeriesByType.Any())
+                surgeryTypeChart = await _chartGenerator.GenerateSurgeryTypeChart(reportData.SurgeriesByType, 500, 250);
+        }
+        catch { /* Fallback: sin gráfico */ }
+        
+        try
+        {
+            if (reportData.SurgeonStats.Any())
+                surgeonVolumeChart = await _chartGenerator.GenerateSurgeonVolumeChart(reportData.SurgeonStats, 500, 250);
+        }
+        catch { /* Fallback: sin gráfico */ }
+        
+        try
+        {
+            if (reportData.DailySurgeriesTimeline.Any())
+            {
+                var timelineStringData = reportData.DailySurgeriesTimeline
+                    .ToDictionary(x => x.Key.ToString("dd/MM"), x => x.Value);
+                timelineChart = await _chartGenerator.GenerateTimelineChart(timelineStringData, 700, 300);
+            }
+        }
+        catch { /* Fallback: sin gráfico */ }
+        
+        try
+        {
+            if (reportData.HeatmapData.Any())
+                heatmapChart = await _chartGenerator.GenerateHeatmapChart(reportData.HeatmapData, 600, 400);
+        }
+        catch { /* Fallback: sin gráfico */ }
+
         Document.Create(container =>
         {
+            // Página 1: Resumen ejecutivo
             container.Page(page =>
             {
                 page.Size(PageSizes.A4);
@@ -80,7 +110,79 @@ public class PdfGeneratorService
                 page.DefaultTextStyle(x => x.FontSize(10).FontFamily(Fonts.Arial));
 
                 page.Header().Element(container => CreateHeader(container, reportTitle, reportData));
-                page.Content().Element(container => CreateContent(container, reportData));
+                page.Content().Element(container => CreateSummaryContent(container, reportData));
+                page.Footer().Element(CreateFooter);
+            });
+            
+            // Página 2: Gráfico Cirugías por Tipo
+            if (surgeryTypeChart != null)
+            {
+                container.Page(page =>
+                {
+                    page.Size(PageSizes.A4);
+                    page.Margin(2, Unit.Centimetre);
+                    page.DefaultTextStyle(x => x.FontSize(10).FontFamily(Fonts.Arial));
+
+                    page.Header().Element(container => CreateHeader(container, reportTitle + " - Cirugías por Tipo", reportData));
+                    page.Content().Element(container => CreateSingleChart(container, "🥧 Cirugías por Tipo", surgeryTypeChart));
+                    page.Footer().Element(CreateFooter);
+                });
+            }
+            
+            // Página 3: Top Cirujanos
+            if (surgeonVolumeChart != null)
+            {
+                container.Page(page =>
+                {
+                    page.Size(PageSizes.A4);
+                    page.Margin(2, Unit.Centimetre);
+                    page.DefaultTextStyle(x => x.FontSize(10).FontFamily(Fonts.Arial));
+
+                    page.Header().Element(container => CreateHeader(container, reportTitle + " - Top Cirujanos", reportData));
+                    page.Content().Element(container => CreateSingleChart(container, "👨‍⚕️ Top Cirujanos por Volumen", surgeonVolumeChart));
+                    page.Footer().Element(CreateFooter);
+                });
+            }
+            
+            // Página 4: Evolución Temporal
+            if (timelineChart != null)
+            {
+                container.Page(page =>
+                {
+                    page.Size(PageSizes.A4);
+                    page.Margin(2, Unit.Centimetre);
+                    page.DefaultTextStyle(x => x.FontSize(10).FontFamily(Fonts.Arial));
+
+                    page.Header().Element(container => CreateHeader(container, reportTitle + " - Evolución Temporal", reportData));
+                    page.Content().Element(container => CreateSingleChart(container, "📈 Evolución en el Tiempo", timelineChart));
+                    page.Footer().Element(CreateFooter);
+                });
+            }
+            
+            // Página 5: Mapa de Calor (Tabla Visual)
+            if (reportData.HeatmapData.Any())
+            {
+                container.Page(page =>
+                {
+                    page.Size(PageSizes.A4);
+                    page.Margin(2, Unit.Centimetre);
+                    page.DefaultTextStyle(x => x.FontSize(10).FontFamily(Fonts.Arial));
+
+                    page.Header().Element(container => CreateHeader(container, reportTitle + " - Mapa de Calor", reportData));
+                    page.Content().Element(container => CreateHeatmapTable(container, reportData));
+                    page.Footer().Element(CreateFooter);
+                });
+            }
+            
+            // Página Final: Estadísticas detalladas
+            container.Page(page =>
+            {
+                page.Size(PageSizes.A4);
+                page.Margin(2, Unit.Centimetre);
+                page.DefaultTextStyle(x => x.FontSize(10).FontFamily(Fonts.Arial));
+
+                page.Header().Element(container => CreateHeader(container, reportTitle + " - Estadísticas Detalladas", reportData));
+                page.Content().Element(container => CreateDetailedStats(container, reportData));
                 page.Footer().Element(CreateFooter);
             });
         })
@@ -112,8 +214,9 @@ public class PdfGeneratorService
                     using var stream = assembly.GetManifestResourceStream(resourceName);
                     if (stream != null)
                     {
-                        var logoBytes = new byte[stream.Length];
-                        stream.Read(logoBytes, 0, logoBytes.Length);
+                        using var ms = new MemoryStream();
+                        stream.CopyTo(ms);
+                        var logoBytes = ms.ToArray();
                         container.Image(logoBytes).FitArea();
                     }
                     else
@@ -129,7 +232,7 @@ public class PdfGeneratorService
         });
     }
 
-    private void CreateContent(IContainer container, ReportData reportData)
+    private void CreateSummaryContent(IContainer container, ReportData reportData)
     {
         container.PaddingVertical(1, Unit.Centimetre).Column(column =>
         {
@@ -137,11 +240,103 @@ public class PdfGeneratorService
 
             // Resumen ejecutivo
             column.Item().Element(container => CreateExecutiveSummary(container, reportData));
+            
+            // Tendencias comparativas
+            if (reportData.PreviousPeriodTotal.HasValue)
+            {
+                column.Item().Element(container => CreateComparativeTrends(container, reportData));
+            }
 
-            // Gráficos visuales
-            column.Item().Element(container => CreateChartsSection(container, reportData));
+            // Métricas adicionales
+            column.Item().Element(container => CreateAdditionalMetrics(container, reportData));
+        });
+    }
 
-            // Estadísticas de cirujanos
+    private void CreateSingleChart(IContainer container, string chartTitle, byte[] chartBytes)
+    {
+        container.PaddingVertical(2, Unit.Centimetre).Column(column =>
+        {
+            column.Item().Text(chartTitle)
+                .FontSize(18).Bold().FontColor(Colors.Blue.Darken1).AlignCenter();
+                
+            column.Item().PaddingTop(30).AlignCenter().Image(chartBytes).FitArea();
+        });
+    }
+
+    private void CreateHeatmapTable(IContainer container, ReportData reportData)
+    {
+        container.PaddingVertical(2, Unit.Centimetre).Column(column =>
+        {
+            column.Item().Text("🔥 Mapa de Calor: Actividad por Día y Hora")
+                .FontSize(18).Bold().FontColor(Colors.Blue.Darken1).AlignCenter();
+                
+            column.Item().PaddingTop(20).Table(table =>
+            {
+                // 8 columnas: Hora + 7 días
+                table.ColumnsDefinition(columns =>
+                {
+                    columns.ConstantColumn(60); // Hora
+                    for (int i = 0; i < 7; i++)
+                        columns.RelativeColumn(); // Días
+                });
+
+                // Header
+                table.Header(header =>
+                {
+                    header.Cell().Element(CellStyle).Text("Hora").Bold().AlignCenter();
+                    var dayNames = new[] { "Dom", "Lun", "Mar", "Mié", "Jue", "Vie", "Sáb" };
+                    foreach (var day in dayNames)
+                    {
+                        header.Cell().Element(CellStyle).Text(day).Bold().AlignCenter();
+                    }
+                });
+
+                // Filas por hora (6AM a 10PM)
+                var maxCount = reportData.HeatmapData.Values.SelectMany(d => d.Values).DefaultIfEmpty(0).Max();
+                
+                for (int hour = 6; hour <= 22; hour++)
+                {
+                    table.Cell().Element(CellStyle).Text($"{hour:D2}:00").Bold().AlignCenter();
+                    
+                    for (int day = 0; day <= 6; day++)
+                    {
+                        var dayOfWeek = (DayOfWeek)day;
+                        var count = 0;
+                        
+                        if (reportData.HeatmapData.ContainsKey(dayOfWeek) && reportData.HeatmapData[dayOfWeek].ContainsKey(hour))
+                        {
+                            count = reportData.HeatmapData[dayOfWeek][hour];
+                        }
+                        
+                        var intensity = maxCount > 0 ? (double)count / maxCount : 0;
+                        var bgColor = count == 0 ? Colors.Grey.Lighten4 : 
+                                     intensity <= 0.25 ? Colors.Red.Lighten4 :
+                                     intensity <= 0.5 ? Colors.Red.Lighten2 :
+                                     intensity <= 0.75 ? Colors.Red.Medium : Colors.Red.Darken2;
+                        
+                        var textColor = intensity > 0.5 ? Colors.White : Colors.Black;
+                        var displayText = count == 0 ? "-" : count.ToString();
+                        
+                        table.Cell().Element(container => 
+                            container.Background(bgColor).Padding(8).Text(displayText)
+                                .FontColor(textColor).Bold().AlignCenter()
+                        );
+                    }
+                }
+            });
+            
+            column.Item().PaddingTop(10).Text("Colores: Gris = Sin actividad, Rosa claro a Rojo oscuro = Mayor actividad")
+                .FontSize(10).Italic().FontColor(Colors.Grey.Medium).AlignCenter();
+        });
+    }
+
+    private void CreateDetailedStats(IContainer container, ReportData reportData)
+    {
+        container.PaddingVertical(1, Unit.Centimetre).Column(column =>
+        {
+            column.Spacing(20);
+
+            // Estadísticas detalladas de cirujanos
             column.Item().Element(container => CreateSurgeonStatistics(container, reportData));
 
             // Cirugías por tipo
@@ -149,11 +344,67 @@ public class PdfGeneratorService
 
             // Top colaboraciones
             column.Item().Element(container => CreateTopCollaborations(container, reportData));
-
-            // Métricas adicionales
-            column.Item().Element(container => CreateAdditionalMetrics(container, reportData));
         });
     }
+
+    private void CreateMainContent(IContainer container, ReportData reportData, byte[]? surgeryTypeChart = null, byte[]? timelineChart = null, byte[]? heatmapChart = null)
+    {
+        container.PaddingVertical(1, Unit.Centimetre).Column(column =>
+        {
+            column.Spacing(20);
+
+            // Resumen ejecutivo
+            column.Item().Element(container => CreateExecutiveSummary(container, reportData));
+            
+            // Tendencias comparativas
+            if (reportData.PreviousPeriodTotal.HasValue)
+            {
+                column.Item().Element(container => CreateComparativeTrends(container, reportData));
+            }
+
+            // Gráficos principales (sin Top Cirujanos)
+            column.Item().Element(container => CreateMainChartsSection(container, reportData, surgeryTypeChart, timelineChart, heatmapChart));
+        });
+    }
+
+    private void CreateDetailedContent(IContainer container, ReportData reportData, byte[]? surgeonVolumeChart = null)
+    {
+        container.PaddingVertical(1, Unit.Centimetre).Column(column =>
+        {
+            column.Spacing(20);
+
+            // Gráfico de Top Cirujanos (página completa)
+            if (reportData.SurgeonStats.Any())
+            {
+                column.Item().Element(container =>
+                {
+                    container.Border(1).BorderColor(Colors.Grey.Lighten2).Padding(15).Column(col =>
+                    {
+                        col.Item().Text("👨‍⚕️ Top Cirujanos por Volumen").FontSize(16).SemiBold().AlignCenter();
+                        
+                        if (surgeonVolumeChart != null)
+                        {
+                            col.Item().PaddingTop(15).MaxHeight(400).AlignCenter().Image(surgeonVolumeChart).FitArea();
+                        }
+                        else
+                        {
+                            col.Item().Height(300).AlignCenter().Text("Gráfico de cirujanos no disponible").FontColor(Colors.Grey.Medium);
+                        }
+                    });
+                });
+            }
+
+            // Estadísticas detalladas de cirujanos
+            column.Item().Element(container => CreateSurgeonStatistics(container, reportData));
+
+            // Cirugías por tipo
+            column.Item().Element(container => CreateSurgeryTypeBreakdown(container, reportData));
+
+            // Top colaboraciones
+            column.Item().Element(container => CreateTopCollaborations(container, reportData));
+        });
+    }
+
 
     private void CreateExecutiveSummary(IContainer container, ReportData reportData)
     {
@@ -194,7 +445,7 @@ public class PdfGeneratorService
         });
     }
 
-    private void CreateChartsSection(IContainer container, ReportData reportData)
+    private void CreateMainChartsSection(IContainer container, ReportData reportData, byte[]? surgeryTypeChart = null, byte[]? timelineChart = null, byte[]? heatmapChart = null)
     {
         container.Column(column =>
         {
@@ -210,12 +461,11 @@ public class PdfGeneratorService
                     {
                         col.Item().Text("Cirugías por Tipo").FontSize(14).SemiBold().AlignCenter();
                         
-                        try
+                        if (surgeryTypeChart != null)
                         {
-                            var chartBytes = _chartGenerator.GenerateSurgeryTypeChart(reportData.SurgeriesByType, 500, 250);
-                            col.Item().MaxHeight(250).AlignCenter().Image(chartBytes).FitArea();
+                            col.Item().MaxHeight(250).AlignCenter().Image(surgeryTypeChart).FitArea();
                         }
-                        catch
+                        else
                         {
                             col.Item().Height(200).AlignCenter().Text("Gráfico de cirugías por tipo no disponible").FontColor(Colors.Grey.Medium);
                         }
@@ -223,51 +473,50 @@ public class PdfGeneratorService
                 });
             }
             
-            // Gráfico de top cirujanos (ancho completo)
-            if (reportData.SurgeonStats.Any())
-            {
-                column.Item().PaddingTop(15).Element(container =>
-                {
-                    container.Border(1).BorderColor(Colors.Grey.Lighten2).Padding(15).Column(col =>
-                    {
-                        col.Item().Text("Top Cirujanos").FontSize(14).SemiBold().AlignCenter();
-                        
-                        try
-                        {
-                            var chartBytes = _chartGenerator.GenerateSurgeonVolumeChart(reportData.SurgeonStats, 500, 250);
-                            col.Item().MaxHeight(250).AlignCenter().Image(chartBytes).FitArea();
-                        }
-                        catch
-                        {
-                            col.Item().Height(200).AlignCenter().Text("Gráfico de cirujanos no disponible").FontColor(Colors.Grey.Medium);
-                        }
-                    });
-                });
-            }
-
-            // Gráfico de tendencia temporal (si hay datos temporales)
+            // Gráfico de evolución temporal
             if (reportData.DailySurgeriesTimeline.Any())
             {
                 column.Item().PaddingTop(15).Element(container =>
                 {
                     container.Border(1).BorderColor(Colors.Grey.Lighten2).Padding(15).Column(col =>
                     {
-                        col.Item().Text("Tendencia Temporal").FontSize(14).SemiBold().AlignCenter();
+                        col.Item().Text("Evolución Temporal").FontSize(14).SemiBold().AlignCenter();
                         
-                        try
+                        if (timelineChart != null)
                         {
-                            var chartBytes = _chartGenerator.GenerateTimelineChart(reportData.DailySurgeriesTimeline, 700, 300);
-                            col.Item().MaxHeight(300).AlignCenter().Image(chartBytes).FitArea();
+                            col.Item().MaxHeight(300).AlignCenter().Image(timelineChart).FitArea();
                         }
-                        catch
+                        else
                         {
-                            col.Item().Height(200).AlignCenter().Text("Gráfico de tendencia no disponible").FontColor(Colors.Grey.Medium);
+                            col.Item().Height(200).AlignCenter().Text("Gráfico de evolución temporal no disponible").FontColor(Colors.Grey.Medium);
+                        }
+                    });
+                });
+            }
+            
+            // Mapa de calor horario
+            if (reportData.HeatmapData.Any())
+            {
+                column.Item().PaddingTop(15).Element(container =>
+                {
+                    container.Border(1).BorderColor(Colors.Grey.Lighten2).Padding(15).Column(col =>
+                    {
+                        col.Item().Text("🔥 Mapa de Calor: Actividad por Día y Hora").FontSize(14).SemiBold().AlignCenter();
+                        
+                        if (heatmapChart != null)
+                        {
+                            col.Item().MaxHeight(400).AlignCenter().Image(heatmapChart).FitArea();
+                        }
+                        else
+                        {
+                            col.Item().Height(200).AlignCenter().Text("Mapa de calor no disponible").FontColor(Colors.Grey.Medium);
                         }
                     });
                 });
             }
         });
     }
+
 
     private void CreateSurgeonStatistics(IContainer container, ReportData reportData)
     {
@@ -430,6 +679,39 @@ public class PdfGeneratorService
     private static IContainer CellStyle(IContainer container)
     {
         return container.BorderBottom(1).BorderColor(Colors.Grey.Lighten2).PaddingVertical(5);
+    }
+
+    private void CreateComparativeTrends(IContainer container, ReportData reportData)
+    {
+        container.Column(column =>
+        {
+            column.Item().Text("📊 COMPARACIÓN CON PERÍODO ANTERIOR")
+                .FontSize(16).Bold().FontColor(Colors.Blue.Darken1);
+
+            column.Item().PaddingTop(10).Row(row =>
+            {
+                row.RelativeItem().Column(col =>
+                {
+                    col.Item().Text("📈 Período Actual").SemiBold();
+                    col.Item().Text($"{reportData.TotalSurgeries} cirugías").FontSize(20).Bold().FontColor(Colors.Blue.Darken2);
+                });
+
+                row.RelativeItem().Column(col =>
+                {
+                    col.Item().Text("📅 Período Anterior").SemiBold();
+                    col.Item().Text($"{reportData.PreviousPeriodTotal} cirugías").FontSize(20).Bold().FontColor(Colors.Grey.Darken1);
+                });
+
+                row.RelativeItem().Column(col =>
+                {
+                    col.Item().Text("🔄 Cambio").SemiBold();
+                    var changeColor = reportData.PercentageChange > 0 ? Colors.Green.Darken1 : 
+                                     reportData.PercentageChange < 0 ? Colors.Red.Darken1 : Colors.Grey.Darken1;
+                    col.Item().Text($"{reportData.ChangeDirection} {Math.Abs(reportData.PercentageChange):F1}%")
+                        .FontSize(20).Bold().FontColor(changeColor);
+                });
+            });
+        });
     }
 
     private static string GetDayName(DayOfWeek dayOfWeek)

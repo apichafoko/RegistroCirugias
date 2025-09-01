@@ -30,7 +30,14 @@ public class ReportDataService
         var period = ReportPeriod.CreateWeekly();
         var appointments = await _appointmentRepo.GetAppointmentsForWeekAsync(equipoId, period.StartDate, ct);
         
-        return await ProcessAppointmentsIntoReportData(appointments, period, chatId);
+        var reportData = await ProcessAppointmentsIntoReportData(appointments, period, chatId);
+        
+        // Agregar comparación con semana anterior
+        var previousWeekStart = period.StartDate.AddDays(-7);
+        var previousWeekAppointments = await _appointmentRepo.GetAppointmentsForWeekAsync(equipoId, previousWeekStart, ct);
+        reportData.PreviousPeriodTotal = previousWeekAppointments.Count;
+        
+        return reportData;
     }
 
     public async Task<ReportData> GenerateMonthlyReportDataAsync(long chatId, int month, int year, CancellationToken ct = default)
@@ -41,7 +48,15 @@ public class ReportDataService
         var period = ReportPeriod.CreateMonthly(month, year);
         var appointments = await _appointmentRepo.GetAppointmentsForMonthAsync(equipoId, month, year, ct);
         
-        return await ProcessAppointmentsIntoReportData(appointments, period, chatId);
+        var reportData = await ProcessAppointmentsIntoReportData(appointments, period, chatId);
+        
+        // Agregar comparación con mes anterior
+        var previousMonth = month == 1 ? 12 : month - 1;
+        var previousYear = month == 1 ? year - 1 : year;
+        var previousMonthAppointments = await _appointmentRepo.GetAppointmentsForMonthAsync(equipoId, previousMonth, previousYear, ct);
+        reportData.PreviousPeriodTotal = previousMonthAppointments.Count;
+        
+        return reportData;
     }
 
     public async Task<ReportData> GenerateAnnualReportDataAsync(long chatId, int year, CancellationToken ct = default)
@@ -52,7 +67,13 @@ public class ReportDataService
         var period = ReportPeriod.CreateAnnual(year);
         var appointments = await _appointmentRepo.GetAppointmentsForYearAsync(equipoId, year, ct);
         
-        return await ProcessAppointmentsIntoReportData(appointments, period, chatId);
+        var reportData = await ProcessAppointmentsIntoReportData(appointments, period, chatId);
+        
+        // Agregar comparación con año anterior
+        var previousYearAppointments = await _appointmentRepo.GetAppointmentsForYearAsync(equipoId, year - 1, ct);
+        reportData.PreviousPeriodTotal = previousYearAppointments.Count;
+        
+        return reportData;
     }
 
     private async Task<ReportData> ProcessAppointmentsIntoReportData(List<Appointment> appointments, ReportPeriod period, long chatId)
@@ -114,6 +135,42 @@ public class ReportDataService
             .Where(a => a.FechaHora.HasValue)
             .GroupBy(a => a.FechaHora!.Value.Hour)
             .ToDictionary(g => g.Key, g => g.Sum(a => a.Cantidad ?? 1));
+
+        // Mapa de calor: día x hora (matriz real)
+        var appointmentsWithDateTime = appointments.Where(a => a.FechaHora.HasValue).ToList();
+        Console.WriteLine($"[HEATMAP-DEBUG] Total appointments: {appointments.Count}");
+        Console.WriteLine($"[HEATMAP-DEBUG] Appointments with FechaHora: {appointmentsWithDateTime.Count}");
+        
+        if (appointmentsWithDateTime.Any())
+        {
+            Console.WriteLine($"[HEATMAP-DEBUG] Sample FechaHora: {appointmentsWithDateTime.First().FechaHora}");
+            Console.WriteLine($"[HEATMAP-DEBUG] Sample DayOfWeek: {appointmentsWithDateTime.First().FechaHora!.Value.DayOfWeek}");
+            Console.WriteLine($"[HEATMAP-DEBUG] Sample Hour: {appointmentsWithDateTime.First().FechaHora!.Value.Hour}");
+            
+            // Debug: mostrar todas las fechas únicas
+            var uniqueDates = appointmentsWithDateTime.Select(a => a.FechaHora!.Value.Date).Distinct().ToList();
+            Console.WriteLine($"[HEATMAP-DEBUG] Unique dates: {string.Join(", ", uniqueDates.Select(d => d.ToString("yyyy-MM-dd")))}");
+        }
+        
+        reportData.HeatmapData = appointmentsWithDateTime
+            .GroupBy(a => a.FechaHora!.Value.DayOfWeek)
+            .ToDictionary(
+                dayGroup => dayGroup.Key,
+                dayGroup => dayGroup
+                    .GroupBy(a => a.FechaHora!.Value.Hour)
+                    .ToDictionary(hourGroup => hourGroup.Key, hourGroup => hourGroup.Sum(a => a.Cantidad ?? 1))
+            );
+            
+        Console.WriteLine($"[HEATMAP-DEBUG] HeatmapData keys count: {reportData.HeatmapData.Keys.Count}");
+        Console.WriteLine($"[HEATMAP-DEBUG] HeatmapData keys: {string.Join(", ", reportData.HeatmapData.Keys)}");
+        
+        var totalHeatmapEntries = reportData.HeatmapData.Values.Sum(dayDict => dayDict.Values.Sum());
+        Console.WriteLine($"[HEATMAP-DEBUG] Total heatmap entries: {totalHeatmapEntries}");
+        
+        foreach (var day in reportData.HeatmapData)
+        {
+            Console.WriteLine($"[HEATMAP-DEBUG] {day.Key}: {string.Join(", ", day.Value.Select(h => $"{h.Key}h={h.Value}"))}");
+        }
     }
 
     private async Task CalculateSurgeonStatisticsAsync(ReportData reportData, List<Appointment> appointments)

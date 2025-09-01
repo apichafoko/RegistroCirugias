@@ -2,357 +2,338 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
-using SkiaSharp;
+using System.Net.Http;
+using System.Threading.Tasks;
+using System.Text;
+using System.Web;
 using RegistroCx.Models.ReportModels;
 
 namespace RegistroCx.Services.Reports;
 
 public class ChartGeneratorService
 {
-    public byte[] GenerateSurgeryTypeChart(Dictionary<string, int> surgeryTypeData, int width = 400, int height = 300)
+    private readonly HttpClient _httpClient;
+    private const string QuickChartBaseUrl = "https://quickchart.io/chart";
+
+    public ChartGeneratorService()
     {
-        var info = new SKImageInfo(width, height);
-        using var surface = SKSurface.Create(info);
-        var canvas = surface.Canvas;
-        
-        canvas.Clear(SKColors.White);
-        
-        // Preparar datos para gráfico de torta
-        var topSurgeries = surgeryTypeData.OrderByDescending(x => x.Value).Take(6).ToList();
-        var totalValue = topSurgeries.Sum(x => x.Value);
-        
-        if (totalValue == 0) return GenerateNoDataChart(width, height);
-        
-        // Dibujar título
-        using var titlePaint = new SKPaint
+        _httpClient = new HttpClient();
+    }
+
+    public async Task<byte[]> GenerateSurgeryTypeChart(Dictionary<string, int> surgeryTypeData, int width = 400, int height = 300)
+    {
+        try
         {
-            Color = SKColors.Black,
-            IsAntialias = true
-        };
-        
-        using var titleFont = new SKFont(SKTypeface.FromFamilyName("Arial", SKFontStyle.Bold), 16);
-        var titleBounds = new SKRect();
-        titleFont.MeasureText("Cirugías por Tipo", out titleBounds);
-        canvas.DrawText("Cirugías por Tipo", (width - titleBounds.Width) / 2, 25, SKTextAlign.Left, titleFont, titlePaint);
-        
-        // Configurar área del gráfico de torta
-        var chartSize = Math.Min(width - 160, height - 80); // Dejar espacio para leyenda
-        var centerX = chartSize / 2 + 20;
-        var centerY = height / 2;
-        var radius = chartSize / 2 - 10;
-        
-        // Colores para las secciones
-        var colors = new[]
-        {
-            SKColor.Parse("#4A90E2"), // Azul
-            SKColor.Parse("#50C878"), // Verde
-            SKColor.Parse("#FF6B6B"), // Rojo
-            SKColor.Parse("#FFD93D"), // Amarillo
-            SKColor.Parse("#9B59B6"), // Púrpura
-            SKColor.Parse("#FFA500")  // Naranja
-        };
-        
-        using var textPaint = new SKPaint
-        {
-            Color = SKColors.Black,
-            IsAntialias = true
-        };
-        
-        using var textFont = new SKFont(SKTypeface.Default, 12);
-        
-        // Dibujar secciones de la torta
-        float currentAngle = -90; // Empezar arriba
-        
-        for (int i = 0; i < topSurgeries.Count; i++)
-        {
-            var surgery = topSurgeries[i];
-            var percentage = (surgery.Value / (float)totalValue) * 100;
-            var sweepAngle = (surgery.Value / (float)totalValue) * 360;
-            
-            using var sectionPaint = new SKPaint
+            var topSurgeries = surgeryTypeData.OrderByDescending(x => x.Value).Take(6).ToList();
+            if (!topSurgeries.Any()) return await GenerateNoDataChart(width, height);
+
+            var labels = topSurgeries.Select(x => x.Key).ToArray();
+            var data = topSurgeries.Select(x => x.Value).ToArray();
+            var colors = new[] { "#4A90E2", "#50C878", "#FF6B6B", "#FFD93D", "#9B59B6", "#FFA500" };
+
+            var chartConfig = new
             {
-                Color = colors[i % colors.Length],
-                IsAntialias = true
+                type = "pie",
+                data = new
+                {
+                    labels = labels,
+                    datasets = new[]
+                    {
+                        new
+                        {
+                            data = data,
+                            backgroundColor = colors.Take(labels.Length).ToArray()
+                        }
+                    }
+                },
+                options = new
+                {
+                    title = new
+                    {
+                        display = true,
+                        text = "Cirugías por Tipo"
+                    },
+                    plugins = new
+                    {
+                        legend = new
+                        {
+                            position = "right"
+                        }
+                    }
+                }
             };
-            
-            // Dibujar sección de la torta
-            var rect = new SKRect(centerX - radius, centerY - radius, centerX + radius, centerY + radius);
-            canvas.DrawArc(rect, currentAngle, sweepAngle, true, sectionPaint);
-            
-            // Dibujar leyenda
-            var legendY = 50 + i * 25;
-            var legendRect = new SKRect(centerX + radius + 20, legendY - 8, centerX + radius + 35, legendY + 8);
-            canvas.DrawRect(legendRect, sectionPaint);
-            
-            var legendText = $"{surgery.Key}: {surgery.Value} ({percentage:F1}%)";
-            if (legendText.Length > 30) legendText = legendText.Substring(0, 27) + "...";
-            canvas.DrawText(legendText, centerX + radius + 45, legendY + 4, SKTextAlign.Left, textFont, textPaint);
-            
-            currentAngle += sweepAngle;
+
+            return await GenerateChartFromConfig(chartConfig, width, height);
         }
-        
-        // Obtener imagen como bytes
-        using var image = surface.Snapshot();
-        using var data = image.Encode(SKEncodedImageFormat.Png, 100);
-        return data.ToArray();
+        catch
+        {
+            return await GenerateNoDataChart(width, height);
+        }
     }
-    
-    public byte[] GenerateSurgeonVolumeChart(List<SurgeonStatistics> surgeonStats, int width = 400, int height = 300)
+
+    public async Task<byte[]> GenerateSurgeonVolumeChart(List<SurgeonStatistics> surgeonStats, int width = 500, int height = 250)
     {
-        var info = new SKImageInfo(width, height);
-        using var surface = SKSurface.Create(info);
-        var canvas = surface.Canvas;
-        
-        canvas.Clear(SKColors.White);
-        
-        // Tomar top 6 cirujanos
-        var topSurgeons = surgeonStats.OrderByDescending(x => x.TotalSurgeries).Take(6).ToList();
-        if (!topSurgeons.Any()) return GenerateNoDataChart(width, height);
-        
-        var totalSurgeries = topSurgeons.Sum(x => x.TotalSurgeries);
-        
-        // Dibujar título
-        using var titlePaint = new SKPaint
+        try
         {
-            Color = SKColors.Black,
-            IsAntialias = true
-        };
-        
-        using var titleFont = new SKFont(SKTypeface.FromFamilyName("Arial", SKFontStyle.Bold), 16);
-        var titleBounds = new SKRect();
-        titleFont.MeasureText("Top Cirujanos por Volumen", out titleBounds);
-        canvas.DrawText("Top Cirujanos por Volumen", (width - titleBounds.Width) / 2, 25, SKTextAlign.Left, titleFont, titlePaint);
-        
-        // Configurar área del gráfico de torta
-        var chartSize = Math.Min(width - 160, height - 80); // Dejar espacio para leyenda
-        var centerX = chartSize / 2 + 20;
-        var centerY = height / 2;
-        var radius = chartSize / 2 - 10;
-        
-        // Colores para las secciones
-        var colors = new[]
-        {
-            SKColor.Parse("#28A745"), // Verde
-            SKColor.Parse("#007BFF"), // Azul
-            SKColor.Parse("#FFC107"), // Amarillo
-            SKColor.Parse("#DC3545"), // Rojo
-            SKColor.Parse("#6F42C1"), // Púrpura
-            SKColor.Parse("#20C997")  // Turquesa
-        };
-        
-        using var textPaint = new SKPaint
-        {
-            Color = SKColors.Black,
-            IsAntialias = true
-        };
-        
-        using var textFont = new SKFont(SKTypeface.Default, 11);
-        
-        // Dibujar secciones de la torta
-        float currentAngle = -90; // Empezar arriba
-        
-        for (int i = 0; i < topSurgeons.Count; i++)
-        {
-            var surgeon = topSurgeons[i];
-            var percentage = (surgeon.TotalSurgeries / (float)totalSurgeries) * 100;
-            var sweepAngle = (surgeon.TotalSurgeries / (float)totalSurgeries) * 360;
-            
-            using var sectionPaint = new SKPaint
+            var topSurgeons = surgeonStats.OrderByDescending(x => x.TotalSurgeries).Take(8).ToList();
+            if (!topSurgeons.Any()) return await GenerateNoDataChart(width, height);
+
+            var labels = topSurgeons.Select(x => x.SurgeonName).ToArray();
+            var data = topSurgeons.Select(x => x.TotalSurgeries).ToArray();
+
+            var chartConfig = new
             {
-                Color = colors[i % colors.Length],
-                IsAntialias = true
+                type = "bar",
+                data = new
+                {
+                    labels = labels,
+                    datasets = new[]
+                    {
+                        new
+                        {
+                            label = "Cirugías",
+                            data = data,
+                            backgroundColor = "#4A90E2"
+                        }
+                    }
+                },
+                options = new
+                {
+                    title = new
+                    {
+                        display = true,
+                        text = "Top Cirujanos por Volumen"
+                    },
+                    scales = new
+                    {
+                        yAxes = new[]
+                        {
+                            new
+                            {
+                                ticks = new
+                                {
+                                    beginAtZero = true,
+                                    min = 0
+                                }
+                            }
+                        }
+                    },
+                    maintainAspectRatio = false
+                }
             };
-            
-            // Dibujar sección de la torta
-            var rect = new SKRect(centerX - radius, centerY - radius, centerX + radius, centerY + radius);
-            canvas.DrawArc(rect, currentAngle, sweepAngle, true, sectionPaint);
-            
-            // Dibujar leyenda
-            var legendY = 50 + i * 22;
-            var legendRect = new SKRect(centerX + radius + 20, legendY - 6, centerX + radius + 32, legendY + 6);
-            canvas.DrawRect(legendRect, sectionPaint);
-            
-            var surgeonName = surgeon.SurgeonName.Length > 12 ? surgeon.SurgeonName.Substring(0, 12) + "..." : surgeon.SurgeonName;
-            var legendText = $"{surgeonName}: {surgeon.TotalSurgeries} ({percentage:F1}%)";
-            canvas.DrawText(legendText, centerX + radius + 40, legendY + 3, SKTextAlign.Left, textFont, textPaint);
-            
-            currentAngle += sweepAngle;
+
+            return await GenerateChartFromConfig(chartConfig, width, height);
         }
-        
-        using var image = surface.Snapshot();
-        using var data = image.Encode(SKEncodedImageFormat.Png, 100);
-        return data.ToArray();
+        catch
+        {
+            return await GenerateNoDataChart(width, height);
+        }
     }
-    
-    public byte[] GenerateTimelineChart(Dictionary<DateTime, int> timelineData, int width = 700, int height = 300)
+
+    public async Task<byte[]> GenerateHeatmapChart(Dictionary<DayOfWeek, Dictionary<int, int>> heatmapData, int width = 600, int height = 400)
     {
-        var info = new SKImageInfo(width, height);
-        using var surface = SKSurface.Create(info);
-        var canvas = surface.Canvas;
-        
-        canvas.Clear(SKColors.White);
-        
-        if (!timelineData.Any()) return GenerateNoDataChart(width, height);
-        
-        var sortedData = timelineData.OrderBy(x => x.Key).ToList();
-        var maxValue = Math.Max(1, sortedData.Max(x => x.Value)); // Evitar división por 0
-        
-        // Configuración del gráfico más amplio
-        var chartArea = new SKRect(60, 50, width - 40, height - 80);
-        var pointWidth = sortedData.Count > 1 ? (chartArea.Width - 40) / (sortedData.Count - 1) : chartArea.Width / 2;
-        
-        // Dibujar título
-        using var titlePaint = new SKPaint
+        try
         {
-            Color = SKColors.Black,
-            IsAntialias = true
-        };
-        
-        using var titleFont = new SKFont(SKTypeface.FromFamilyName("Arial", SKFontStyle.Bold), 16);
-        var titleBounds = new SKRect();
-        titleFont.MeasureText("Tendencia Temporal - Cirugías por Día", out titleBounds);
-        canvas.DrawText("Tendencia Temporal - Cirugías por Día", (width - titleBounds.Width) / 2, 30, SKTextAlign.Left, titleFont, titlePaint);
-        
-        // Dibujar grilla de fondo
-        using var gridPaint = new SKPaint
-        {
-            Color = SKColors.LightGray,
-            StrokeWidth = 1,
-            IsAntialias = true,
-            Style = SKPaintStyle.Stroke
-        };
-        
-        // Líneas horizontales de la grilla
-        for (int i = 0; i <= 5; i++)
-        {
-            var y = chartArea.Bottom - (i / 5f) * (chartArea.Height - 20);
-            canvas.DrawLine(chartArea.Left, y, chartArea.Right, y, gridPaint);
+            Console.WriteLine($"[HEATMAP-CHART] Creating heatmap table with {heatmapData.Count} days");
+            
+            var dayNames = new[] { "Dom", "Lun", "Mar", "Mié", "Jue", "Vie", "Sáb" };
+            var maxCount = heatmapData.Values.SelectMany(d => d.Values).DefaultIfEmpty(0).Max();
+            Console.WriteLine($"[HEATMAP-CHART] Max surgery count: {maxCount}");
+            
+            // Crear tabla HTML para el heatmap
+            var htmlTable = "<table style='border-collapse: collapse; width: 100%; font-family: Arial;'>";
+            
+            // Header con días
+            htmlTable += "<tr><th style='border: 1px solid #ddd; padding: 8px; background: #f5f5f5;'>Hora</th>";
+            foreach (var day in dayNames)
+            {
+                htmlTable += $"<th style='border: 1px solid #ddd; padding: 8px; background: #f5f5f5; text-align: center;'>{day}</th>";
+            }
+            htmlTable += "</tr>";
+            
+            // Filas por hora
+            for (int hour = 6; hour <= 22; hour++)
+            {
+                htmlTable += $"<tr><td style='border: 1px solid #ddd; padding: 8px; font-weight: bold;'>{hour:D2}:00</td>";
+                
+                for (int day = 0; day <= 6; day++)
+                {
+                    var dayOfWeek = (DayOfWeek)day;
+                    var count = 0;
+                    
+                    if (heatmapData.ContainsKey(dayOfWeek) && heatmapData[dayOfWeek].ContainsKey(hour))
+                    {
+                        count = heatmapData[dayOfWeek][hour];
+                    }
+                    
+                    var intensity = maxCount > 0 ? (double)count / maxCount : 0;
+                    var bgColor = count == 0 ? "#f9f9f9" : 
+                                 intensity <= 0.25 ? "#ffebee" :
+                                 intensity <= 0.5 ? "#ffcdd2" :
+                                 intensity <= 0.75 ? "#e57373" : "#d32f2f";
+                    
+                    var textColor = intensity > 0.5 ? "white" : "black";
+                    var displayText = count == 0 ? "-" : count.ToString();
+                    
+                    htmlTable += $"<td style='border: 1px solid #ddd; padding: 8px; text-align: center; background-color: {bgColor}; color: {textColor}; font-weight: bold;'>{displayText}</td>";
+                }
+                htmlTable += "</tr>";
+            }
+            htmlTable += "</table>";
+            
+            // Crear gráfico simple que muestre la tabla
+            var chartConfig = new
+            {
+                type = "bar",
+                data = new
+                {
+                    labels = new[] { "Ver tabla en PDF" },
+                    datasets = new[]
+                    {
+                        new
+                        {
+                            data = new[] { 1 },
+                            backgroundColor = "#4A90E2"
+                        }
+                    }
+                },
+                options = new
+                {
+                    title = new
+                    {
+                        display = true,
+                        text = "🔥 Mapa de Calor disponible en PDF"
+                    },
+                    legend = new { display = false },
+                    scales = new
+                    {
+                        yAxes = new[]
+                        {
+                            new
+                            {
+                                ticks = new { display = false }
+                            }
+                        }
+                    }
+                }
+            };
+
+            Console.WriteLine($"[HEATMAP-CHART] Generated placeholder chart, actual heatmap will be in PDF table");
+            return await GenerateChartFromConfig(chartConfig, width, height);
         }
-        
-        // Dibujar línea y puntos
-        using var linePaint = new SKPaint
+        catch (Exception ex)
         {
-            Color = SKColor.Parse("#2196F3"),
-            StrokeWidth = 3,
-            IsAntialias = true,
-            Style = SKPaintStyle.Stroke
-        };
-        
-        using var pointPaint = new SKPaint
-        {
-            Color = SKColors.White,
-            IsAntialias = true
-        };
-        
-        using var pointBorderPaint = new SKPaint
-        {
-            Color = SKColor.Parse("#2196F3"),
-            StrokeWidth = 2,
-            IsAntialias = true,
-            Style = SKPaintStyle.Stroke
-        };
-        
-        using var textPaint = new SKPaint
-        {
-            Color = SKColors.Black,
-            IsAntialias = true
-        };
-        
-        using var textFont = new SKFont(SKTypeface.Default, 10);
-        
-        using var datePaint = new SKPaint
-        {
-            Color = SKColors.DarkGray,
-            IsAntialias = true
-        };
-        
-        using var dateFont = new SKFont(SKTypeface.Default, 9);
-        
-        var path = new SKPath();
-        bool first = true;
-        
-        for (int i = 0; i < sortedData.Count; i++)
-        {
-            var point = sortedData[i];
-            var x = chartArea.Left + 20 + i * pointWidth;
-            var y = chartArea.Bottom - 10 - (point.Value / (float)maxValue) * (chartArea.Height - 30);
-            
-            if (first)
-            {
-                path.MoveTo(x, y);
-                first = false;
-            }
-            else
-            {
-                path.LineTo(x, y);
-            }
-            
-            // Dibujar punto con borde
-            canvas.DrawCircle(x, y, 5, pointPaint);
-            canvas.DrawCircle(x, y, 5, pointBorderPaint);
-            
-            // Dibujar valor encima del punto
-            if (point.Value > 0)
-            {
-                canvas.DrawText(point.Value.ToString(), x - 5, y - 12, SKTextAlign.Left, textFont, textPaint);
-            }
-            
-            // Dibujar fecha debajo - mostrar más fechas para reportes mensuales
-            var showEvery = Math.Max(1, sortedData.Count / 15); // Mostrar hasta 15 fechas
-            if (i % showEvery == 0 || i == sortedData.Count - 1) // Siempre mostrar primera y última
-            {
-                canvas.Save();
-                canvas.Translate(x, chartArea.Bottom + 15);
-                canvas.RotateDegrees(-45); // Rotar texto para mejor legibilidad
-                canvas.DrawText(point.Key.ToString("dd/MM"), 0, 0, SKTextAlign.Left, dateFont, datePaint);
-                canvas.Restore();
-            }
+            Console.WriteLine($"[HEATMAP-CHART] Error: {ex.Message}");
+            return await GenerateNoDataChart(width, height);
         }
-        
-        canvas.DrawPath(path, linePaint);
-        path.Dispose();
-        
-        // Dibujar etiquetas del eje Y
-        using var yAxisPaint = new SKPaint
-        {
-            Color = SKColors.Gray,
-            IsAntialias = true
-        };
-        
-        using var yAxisFont = new SKFont(SKTypeface.Default, 9);
-        
-        for (int i = 0; i <= 5; i++)
-        {
-            var value = (maxValue / 5f) * i;
-            var y = chartArea.Bottom - (i / 5f) * (chartArea.Height - 20);
-            canvas.DrawText(((int)value).ToString(), 10, y + 3, SKTextAlign.Left, yAxisFont, yAxisPaint);
-        }
-        
-        using var image = surface.Snapshot();
-        using var data = image.Encode(SKEncodedImageFormat.Png, 100);
-        return data.ToArray();
     }
-    
-    private byte[] GenerateNoDataChart(int width, int height)
+
+    public async Task<byte[]> GenerateTimelineChart(Dictionary<string, int> timelineData, int width = 700, int height = 300)
     {
-        var info = new SKImageInfo(width, height);
-        using var surface = SKSurface.Create(info);
-        var canvas = surface.Canvas;
-        
-        canvas.Clear(SKColors.White);
-        
-        using var textPaint = new SKPaint
+        try
         {
-            Color = SKColors.Gray,
-            IsAntialias = true
+            if (!timelineData.Any()) return await GenerateNoDataChart(width, height);
+
+            var sortedData = timelineData.OrderBy(x => x.Key).ToList();
+            var labels = sortedData.Select(x => x.Key).ToArray();
+            var data = sortedData.Select(x => x.Value).ToArray();
+
+            var chartConfig = new
+            {
+                type = "line",
+                data = new
+                {
+                    labels = labels,
+                    datasets = new[]
+                    {
+                        new
+                        {
+                            label = "Cirugías",
+                            data = data,
+                            borderColor = "#4A90E2",
+                            backgroundColor = "rgba(74, 144, 226, 0.1)",
+                            fill = true,
+                            tension = 0.3
+                        }
+                    }
+                },
+                options = new
+                {
+                    title = new
+                    {
+                        display = true,
+                        text = "Evolución Temporal"
+                    },
+                    scales = new
+                    {
+                        yAxes = new[]
+                        {
+                            new
+                            {
+                                ticks = new
+                                {
+                                    beginAtZero = true,
+                                    min = 0
+                                }
+                            }
+                        }
+                    }
+                }
+            };
+
+            return await GenerateChartFromConfig(chartConfig, width, height);
+        }
+        catch
+        {
+            return await GenerateNoDataChart(width, height);
+        }
+    }
+
+    private async Task<byte[]> GenerateChartFromConfig(object config, int width, int height)
+    {
+        var configJson = System.Text.Json.JsonSerializer.Serialize(config);
+        var encodedConfig = HttpUtility.UrlEncode(configJson);
+        
+        var url = $"{QuickChartBaseUrl}?c={encodedConfig}&w={width}&h={height}&format=png";
+        
+        var response = await _httpClient.GetAsync(url);
+        response.EnsureSuccessStatusCode();
+        
+        return await response.Content.ReadAsByteArrayAsync();
+    }
+
+    private async Task<byte[]> GenerateNoDataChart(int width, int height)
+    {
+        var chartConfig = new
+        {
+            type = "bar",
+            data = new
+            {
+                labels = new[] { "Sin datos" },
+                datasets = new[]
+                {
+                    new
+                    {
+                        data = new[] { 0 },
+                        backgroundColor = "#E0E0E0"
+                    }
+                }
+            },
+            options = new
+            {
+                title = new
+                {
+                    display = true,
+                    text = "No hay datos disponibles"
+                }
+            }
         };
-        
-        using var textFont = new SKFont(SKTypeface.Default, 14);
-        
-        canvas.DrawText("Sin datos disponibles", width / 2, height / 2, SKTextAlign.Center, textFont, textPaint);
-        
-        using var image = surface.Snapshot();
-        using var data = image.Encode(SKEncodedImageFormat.Png, 100);
-        return data.ToArray();
+
+        return await GenerateChartFromConfig(chartConfig, width, height);
+    }
+
+    public void Dispose()
+    {
+        _httpClient?.Dispose();
     }
 }
