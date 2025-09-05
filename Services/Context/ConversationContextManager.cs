@@ -9,6 +9,7 @@ using RegistroCx.Models;
 using RegistroCx.Services.Extraction;
 using RegistroCx.ProgramServices.Services.Telegram;
 using RegistroCx.Helpers;
+using Telegram.Bot.Types.ReplyMarkups;
 
 namespace RegistroCx.Services.Context
 {
@@ -19,7 +20,11 @@ namespace RegistroCx.Services.Context
         
         // Prompt ID para análisis de contexto conversacional
         private const string ContextAnalysisPromptId = "pmpt_68a10cd97c48819685ba35869b43c3ec031d14b92f3fc512"; // TODO: Reemplazar con el prompt ID real
-        private const string ContextAnalysisPromptVersion = "1";
+        private const string ContextAnalysisPromptVersion = "3";
+        
+        // Prompt ID para detección de nueva cirugía contextual
+        private const string NewSurgeryDetectorPromptId = "pmpt_68b8b7467b648195bc54e2e1a6e9ce6707afad5c6e5dca0c"; // TODO: Crear este prompt en OpenAI
+        private const string NewSurgeryDetectorPromptVersion = "1";
 
         // Palabras que indican cambio explícito de contexto
         private readonly HashSet<string> _contextSwitchKeywords = new(StringComparer.OrdinalIgnoreCase)
@@ -90,10 +95,20 @@ namespace RegistroCx.Services.Context
                 var contextMessage = GenerateContextReminderMessage(currentContext);
                 
                 // Añadir el mensaje del usuario para referencia
-                var fullMessage = $"{contextMessage}\n\n💬 Me pusiste: \"{message}\"\n\n" +
-                                 "¿Seguimos con esa tarea o cambiamos a otra?";
+                var fullMessage = $"{contextMessage}\n\n💬 Recibí: \"{message}\"\n\n🤔 ¿Qué querés hacer?";
 
-                await MessageSender.SendWithRetry(chatId, fullMessage, cancellationToken: ct);
+                // Crear botonera inline mejorada
+                var inlineKeyboard = new Telegram.Bot.Types.ReplyMarkups.InlineKeyboardMarkup(new[]
+                {
+                    new[]
+                    {
+                        Telegram.Bot.Types.ReplyMarkups.InlineKeyboardButton.WithCallbackData("✅ Seguir con esto", "context_continue"),
+                        Telegram.Bot.Types.ReplyMarkups.InlineKeyboardButton.WithCallbackData("🆕 Nueva cirugía", "context_new_surgery")
+                    }
+                });
+
+                await MessageSender.SendWithRetry(chatId, fullMessage, replyMarkup: inlineKeyboard, cancellationToken: ct);
+                
                 return true;
             }
             catch (Exception ex)
@@ -108,24 +123,24 @@ namespace RegistroCx.Services.Context
             return context.Type switch
             {
                 ContextType.RegisteringSurgery => 
-                    $"🏥 Mmm creo que estábamos registrando una cirugía nueva{GetProgressDetails(context)}",
+                    $"🏥 Estábamos registrando una cirugía nueva{GetProgressDetails(context)}",
                 
                 ContextType.ModifyingSurgery => 
-                    $"✏️ Creo que estábamos cambiando algunos datos de una cirugía{GetProgressDetails(context)}",
+                    $"✏️ Estábamos modificando datos de una cirugía{GetProgressDetails(context)}",
                 
                 ContextType.FieldWizard => 
-                    $"📝 Te estaba preguntando por <b>{GetFieldHumanName(context.CurrentField)}</b> para completar todo{GetProgressDetails(context)}",
+                    $"📝 Te estaba pidiendo: <b>{GetFieldHumanName(context.CurrentField)}</b>{GetProgressDetails(context)}",
                 
                 ContextType.Confirming => 
-                    $"✅ Estaba esperando que me digas si los datos están bien{GetProgressDetails(context)}",
+                    $"✅ Estaba esperando tu confirmación de los datos{GetProgressDetails(context)}",
                 
                 ContextType.Reporting => 
-                    $"📊 Creo que estábamos armando un reporte{GetProgressDetails(context)}",
+                    $"📊 Estábamos armando un reporte{GetProgressDetails(context)}",
                 
                 ContextType.Canceling => 
                     $"❌ Estábamos cancelando una cirugía{GetProgressDetails(context)}",
                 
-                _ => "🤔 Estábamos charlando algo..."
+                _ => "🤔 Estábamos en una conversación..."
             };
         }
 
@@ -198,10 +213,21 @@ namespace RegistroCx.Services.Context
         {
             try
             {
-                // Crear el input estructurado para el prompt de análisis de contexto
-                var analysisInput = BuildContextAnalysisInput(message, context);
+                // PRIMERO: Usar el detector especializado de nueva cirugía
+                var newSurgeryResult = await DetectNewSurgeryWithLLM(message, context, ct);
+                if (newSurgeryResult.IsNewSurgery)
+                {
+                    return new ContextRelevance
+                    {
+                        IsRelevant = false,
+                        ConfidenceScore = newSurgeryResult.Confidence,
+                        Reason = newSurgeryResult.Reason,
+                        IsExplicitContextSwitch = true
+                    };
+                }
                 
-                // Usar el prompt específico para análisis de contexto
+                // SEGUNDO: Si no es nueva cirugía, analizar relevancia normal
+                var analysisInput = BuildContextAnalysisInput(message, context);
                 var result = await CallContextAnalysisPrompt(analysisInput, ct);
                 
                 return ParseLLMContextResponse(result);
@@ -466,6 +492,206 @@ namespace RegistroCx.Services.Context
                    appointment.Cantidad != null ||
                    !string.IsNullOrEmpty(appointment.Anestesiologo);
         }
+
+        /// <summary>
+        /// Detecta si un mensaje contiene datos de nueva cirugía usando LLM especializado
+        /// </summary>
+        private async Task<NewSurgeryDetectionResult> DetectNewSurgeryWithLLM(string message, ConversationContext context, CancellationToken ct)
+        {
+            try
+            {
+                // Crear input para el detector de nueva cirugía
+                var detectorInput = BuildNewSurgeryDetectorInput(message, context);
+                
+                // Llamar al prompt especializado
+                var response = await CallNewSurgeryDetectorPrompt(detectorInput, ct);
+                
+                // Parsear respuesta
+                return ParseNewSurgeryDetectorResponse(response);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Error in new surgery detection, falling back to heuristics");
+                
+                // Fallback: análisis simple
+                return new NewSurgeryDetectionResult
+                {
+                    IsNewSurgery = false,
+                    Confidence = 0.5,
+                    Reason = "Error en detección LLM - usando fallback",
+                    ElementsDetected = new()
+                };
+            }
+        }
+
+        /// <summary>
+        /// Construye el input para el detector de nueva cirugía
+        /// </summary>
+        private string BuildNewSurgeryDetectorInput(string message, ConversationContext context)
+        {
+            var contextType = context.Type switch
+            {
+                ContextType.Confirming => "esperando_confirmacion",
+                ContextType.FieldWizard when context.CurrentField?.Contains("fecha") == true => "esperando_campo_fecha",
+                ContextType.FieldWizard when context.CurrentField?.Contains("lugar") == true => "esperando_campo_lugar", 
+                ContextType.FieldWizard when context.CurrentField?.Contains("cirujano") == true => "esperando_campo_cirujano",
+                ContextType.FieldWizard when context.CurrentField?.Contains("anestesiologo") == true => "esperando_campo_anestesiologo",
+                ContextType.ModifyingSurgery => "modificando_cirugia",
+                ContextType.RegisteringSurgery => "registrando_cirugia",
+                _ => "conversacion_activa"
+            };
+
+            // Crear input estructurado JSON para el prompt
+            return $@"{{
+                ""contexto_actual"": ""{contextType}"",
+                ""detalles_contexto"": ""{context.Details?.Replace("\"", "\\\"") ?? ""}"",
+                ""mensaje_usuario"": ""{message.Replace("\"", "\\\"")}"" 
+            }}";
+        }
+
+        /// <summary>
+        /// Llama al prompt detector de nueva cirugía
+        /// </summary>
+        private async Task<string> CallNewSurgeryDetectorPrompt(string inputText, CancellationToken ct)
+        {
+            var body = new
+            {
+                prompt = new { id = NewSurgeryDetectorPromptId, version = NewSurgeryDetectorPromptVersion },
+                input = inputText
+            };
+
+            var jsonBody = System.Text.Json.JsonSerializer.Serialize(body);
+            
+            using var httpClient = new HttpClient();
+            httpClient.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", GetOpenAIApiKey());
+            
+            var content = new StringContent(jsonBody, System.Text.Encoding.UTF8, "application/json");
+            var response = await httpClient.PostAsync("https://api.openai.com/v1/responses", content, ct);
+            
+            if (!response.IsSuccessStatusCode)
+            {
+                var errorContent = await response.Content.ReadAsStringAsync();
+                throw new Exception($"Error calling new surgery detector prompt: {response.StatusCode} - {errorContent}");
+            }
+            
+            return await response.Content.ReadAsStringAsync();
+        }
+
+        /// <summary>
+        /// Parsea la respuesta del detector de nueva cirugía
+        /// </summary>
+        private NewSurgeryDetectionResult ParseNewSurgeryDetectorResponse(string response)
+        {
+            try
+            {
+                // Parsear la respuesta del prompt
+                var jsonDoc = System.Text.Json.JsonDocument.Parse(response);
+                
+                // Buscar en 'output' el message con la respuesta
+                if (jsonDoc.RootElement.TryGetProperty("output", out var outputArray))
+                {
+                    foreach (var outEntry in outputArray.EnumerateArray())
+                    {
+                        if (outEntry.TryGetProperty("type", out var typeProperty) && 
+                            typeProperty.GetString() == "message" &&
+                            outEntry.TryGetProperty("content", out var contentArray))
+                        {
+                            foreach (var part in contentArray.EnumerateArray())
+                            {
+                                if (part.TryGetProperty("type", out var partTypeProperty) &&
+                                    partTypeProperty.GetString() == "output_text" &&
+                                    part.TryGetProperty("text", out var textProperty))
+                                {
+                                    var assistantText = textProperty.GetString();
+                                    return ParseNewSurgeryJson(assistantText);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Error parsing new surgery detector response: {Response}", response);
+            }
+
+            // Fallback
+            return new NewSurgeryDetectionResult
+            {
+                IsNewSurgery = false,
+                Confidence = 0.3,
+                Reason = "Error parseando respuesta del detector",
+                ElementsDetected = new()
+            };
+        }
+
+        /// <summary>
+        /// Parsea el JSON específico del detector de nueva cirugía
+        /// </summary>
+        private NewSurgeryDetectionResult ParseNewSurgeryJson(string? jsonText)
+        {
+            if (string.IsNullOrEmpty(jsonText))
+            {
+                return new NewSurgeryDetectionResult
+                {
+                    IsNewSurgery = false,
+                    Confidence = 0.3,
+                    Reason = "Respuesta vacía del detector",
+                    ElementsDetected = new()
+                };
+            }
+
+            try
+            {
+                // El prompt devuelve JSON como:
+                // {"es_nueva_cirugia": true, "confianza": 0.9, "razon": "...", "elementos_detectados": [...]}
+                var options = new System.Text.Json.JsonSerializerOptions { PropertyNameCaseInsensitive = true };
+                var jsonDoc = System.Text.Json.JsonDocument.Parse(jsonText);
+                var root = jsonDoc.RootElement;
+
+                var esNuevaCirugia = root.TryGetProperty("es_nueva_cirugia", out var esNuevaProperty) ? 
+                    esNuevaProperty.GetBoolean() : false;
+
+                var confianza = root.TryGetProperty("confianza", out var confianzaProperty) ? 
+                    confianzaProperty.GetDouble() : 0.5;
+
+                var razon = root.TryGetProperty("razon", out var razonProperty) ? 
+                    razonProperty.GetString() ?? "" : "";
+
+                var elementos = new List<string>();
+                if (root.TryGetProperty("elementos_detectados", out var elementosProperty) && 
+                    elementosProperty.ValueKind == System.Text.Json.JsonValueKind.Array)
+                {
+                    foreach (var elemento in elementosProperty.EnumerateArray())
+                    {
+                        if (elemento.ValueKind == System.Text.Json.JsonValueKind.String)
+                        {
+                            elementos.Add(elemento.GetString() ?? "");
+                        }
+                    }
+                }
+
+                return new NewSurgeryDetectionResult
+                {
+                    IsNewSurgery = esNuevaCirugia,
+                    Confidence = confianza,
+                    Reason = razon,
+                    ElementsDetected = elementos
+                };
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Error parsing new surgery JSON: {Text}", jsonText);
+                
+                return new NewSurgeryDetectionResult
+                {
+                    IsNewSurgery = false,
+                    Confidence = 0.4,
+                    Reason = "Error parsing JSON del detector",
+                    ElementsDetected = new()
+                };
+            }
+        }
     }
 
     /// <summary>
@@ -477,5 +703,16 @@ namespace RegistroCx.Services.Context
         public double Confidence { get; set; }
         public string Reason { get; set; } = "";
         public bool ContextSwitch { get; set; }
+    }
+
+    /// <summary>
+    /// Resultado del detector especializado de nueva cirugía
+    /// </summary>
+    public class NewSurgeryDetectionResult
+    {
+        public bool IsNewSurgery { get; set; }
+        public double Confidence { get; set; }
+        public string Reason { get; set; } = "";
+        public List<string> ElementsDetected { get; set; } = new();
     }
 }

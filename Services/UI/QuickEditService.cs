@@ -583,8 +583,8 @@ namespace RegistroCx.Services.UI
             var appointment = new Appointment { Id = long.Parse(appointmentId) };
             var editKeyboard = GenerateEditKeyboard(appointment);
             
-            await UpdateMessageKeyboardAsync(bot, chatId, messageId, editKeyboard, ct);
             await MessageSender.SendWithRetry(chatId, "✏️ Selecciona qué campo quieres editar:", cancellationToken: ct);
+            await UpdateMessageKeyboardAsync(bot, chatId, messageId, editKeyboard, ct);
         }
 
         private async Task HandleCancelAsync(ITelegramBotClient bot, long chatId, int messageId, string appointmentId, CancellationToken ct)

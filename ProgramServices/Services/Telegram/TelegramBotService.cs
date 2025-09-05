@@ -9,6 +9,7 @@ using Telegram.Bot.Exceptions;
 using Telegram.Bot.Polling;
 using Telegram.Bot.Types;
 using Telegram.Bot.Types.Enums;
+using Telegram.Bot.Types.ReplyMarkups;
 
 namespace RegistroCx.ProgramServices.Services.Telegram;
 
@@ -295,26 +296,56 @@ public class TelegramBotService : BackgroundService
         try
         {
             using var scope = _serviceProvider.CreateScope();
+            var cirugiaFlowService = scope.ServiceProvider.GetRequiredService<CirugiaFlowService>();
             var quickEditService = scope.ServiceProvider.GetService<IQuickEditService>();
             
-            if (quickEditService != null && callbackQuery.Data != null && callbackQuery.Message != null)
+            if (callbackQuery.Data != null && callbackQuery.Message != null)
             {
                 var chatId = callbackQuery.Message.Chat.Id;
                 var messageId = callbackQuery.Message.MessageId;
                 
-                // Handle the callback query
-                var handled = await quickEditService.HandleCallbackQueryAsync(
-                    botClient, 
-                    chatId, 
-                    callbackQuery.Data, 
-                    messageId, 
-                    cancellationToken);
-                
-                if (handled)
+                // Manejar botones de contexto conversacional
+                if (callbackQuery.Data == "context_continue")
                 {
-                    // Answer the callback query to remove the loading state
-                    await botClient.AnswerCallbackQuery(callbackQuery.Id, cancellationToken: cancellationToken);
+                    await botClient.AnswerCallbackQuery(callbackQuery.Id, "✅ Continuando con la tarea actual", cancellationToken: cancellationToken);
+                    await botClient.EditMessageText(
+                        chatId: chatId,
+                        messageId: messageId,
+                        text: "✅ Perfecto, continuamos con lo que estábamos haciendo. ¿Qué necesitás?",
+                        cancellationToken: cancellationToken);
                     return;
+                }
+                
+                if (callbackQuery.Data == "context_new_surgery")
+                {
+                    await botClient.AnswerCallbackQuery(callbackQuery.Id, "🆕 Iniciando nueva cirugía", cancellationToken: cancellationToken);
+                    await botClient.EditMessageText(
+                        chatId: chatId,
+                        messageId: messageId,
+                        text: "🆕 ¡Perfecto! Empezamos con una nueva cirugía. Contame los datos:",
+                        cancellationToken: cancellationToken);
+                    
+                    // Limpiar contexto para nueva cirugía
+                    await cirugiaFlowService.ClearContextAsync(chatId);
+                    return;
+                }
+                
+                // Delegar a QuickEditService para otros botones
+                if (quickEditService != null)
+                {
+                    var handled = await quickEditService.HandleCallbackQueryAsync(
+                        botClient, 
+                        chatId, 
+                        callbackQuery.Data, 
+                        messageId, 
+                        cancellationToken);
+                    
+                    if (handled)
+                    {
+                        // Answer the callback query to remove the loading state
+                        await botClient.AnswerCallbackQuery(callbackQuery.Id, cancellationToken: cancellationToken);
+                        return;
+                    }
                 }
             }
             

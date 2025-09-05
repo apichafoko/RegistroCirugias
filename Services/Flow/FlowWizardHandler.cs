@@ -263,6 +263,11 @@ public class FlowWizardHandler
 
     private static bool IsAppropriatePerson(string response)
     {
+        // Aceptar respuestas que indican "ninguno/nadie"
+        var emptyIndicators = new[] { "nadie", "ninguno", "ninguna", "no hay", "sin", "no", "n/a", "vacio", "vacío" };
+        if (emptyIndicators.Any(indicator => response.Contains(indicator)))
+            return true;
+            
         // Debe ser texto de al menos 2 caracteres, principalmente letras
         return response.Length >= 2 && response.Any(char.IsLetter) && 
                response.Count(char.IsLetter) > response.Count(char.IsDigit);

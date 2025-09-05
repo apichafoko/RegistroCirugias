@@ -154,6 +154,15 @@ public static class CamposExistentes
                 }
 
             case Appointment.CampoPendiente.Anestesiologo:
+                // Verificar si es un indicador de "vacío/nadie"
+                var valorLower = valor.ToLowerInvariant();
+                var emptyIndicators = new[] { "nadie", "ninguno", "ninguna", "no hay", "sin", "no", "n/a", "vacio", "vacío" };
+                if (emptyIndicators.Any(indicator => valorLower.Contains(indicator)))
+                {
+                    appt.Anestesiologo = null;
+                    return true;
+                }
+                
                 if (valor.Length < 2) { error = "Nombre muy corto."; return false; }
                 appt.Anestesiologo = Capitalizador.CapitalizarSimple(valor);
                 return true;
@@ -450,7 +459,7 @@ public static class CamposExistentes
             Appointment.CampoPendiente.Cirujano => $"✅ Listo, el cirujano ahora es {valorLimpio}.",
             Appointment.CampoPendiente.Cirugia => $"✅ Actualicé la cirugía a {valorLimpio}.",
             Appointment.CampoPendiente.Cantidad => GenerarMensajeCantidad(valorLimpio),
-            Appointment.CampoPendiente.Anestesiologo => $"✅ Perfecto, el anestesiólogo es {valorLimpio}.",
+            Appointment.CampoPendiente.Anestesiologo => GenerarMensajeAnestesiologo(valorLimpio),
             _ => $"✅ Actualicé {NombreHumanoCampo(campo)} a: {valorLimpio}"
         };
     }
@@ -504,6 +513,19 @@ public static class CamposExistentes
             };
         }
         return $"✅ Cambié la cantidad a {valor}.";
+    }
+
+    private static string GenerarMensajeAnestesiologo(string valor)
+    {
+        var valorLower = valor.ToLowerInvariant();
+        var emptyIndicators = new[] { "nadie", "ninguno", "ninguna", "no hay", "sin", "no", "n/a", "vacio", "vacío" };
+        
+        if (emptyIndicators.Any(indicator => valorLower.Contains(indicator)))
+        {
+            return "✅ Perfecto, esta cirugía no tendrá anestesiólogo asignado.";
+        }
+        
+        return $"✅ Perfecto, el anestesiólogo es {valor}.";
     }
 
     private static bool EsSoloHora(string valor)

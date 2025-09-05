@@ -29,7 +29,7 @@ namespace RegistroCx.Services.Extraction
         
         // Prompt para clasificación de intents
         private const string IntentClassificationPromptId      = "pmpt_68a0f4164bbc81909e7066dd9486ccf30687ba563fc8837c"; 
-        private const string IntentClassificationPromptVersion = "1";
+        private const string IntentClassificationPromptVersion = "4";
         
         // Prompt para parsing de modificaciones
         private const string ModificationParsingPromptId      = "pmpt_68a0f476cdac8196b067a86fd89d45200e7279f7018ae4c2"; 
@@ -219,8 +219,7 @@ namespace RegistroCx.Services.Extraction
         {
             var body = new
             {
-                prompt_id = IntentClassificationPromptId,
-                prompt_version = IntentClassificationPromptVersion,
+                prompt = new { id = IntentClassificationPromptId, version = IntentClassificationPromptVersion },
                 input = userMessage
             };
 
@@ -233,29 +232,29 @@ namespace RegistroCx.Services.Extraction
             var responseBody = await response.Content.ReadAsStringAsync();
             var doc = JsonDocument.Parse(responseBody);
 
-            // Extraer la respuesta del assistant
+            // Extraer la respuesta del assistant usando formato consistente
             string? assistantText = null;
-            if (doc.RootElement.TryGetProperty("data", out var data) &&
-                data.TryGetProperty("response", out var responseObj) &&
-                responseObj.TryGetProperty("body", out var body_) &&
-                body_.TryGetProperty("choices", out var choices) &&
-                choices.GetArrayLength() > 0)
+            if (doc.RootElement.TryGetProperty("output", out var outputArray) && 
+                outputArray.ValueKind == JsonValueKind.Array)
             {
-                var firstChoice = choices[0];
-                if (firstChoice.TryGetProperty("message", out var message) &&
-                    message.TryGetProperty("content", out var contentArray) &&
-                    contentArray.ValueKind == JsonValueKind.Array)
+                foreach (var outputItem in outputArray.EnumerateArray())
                 {
-                    foreach (var part in contentArray.EnumerateArray())
+                    if (outputItem.TryGetProperty("type", out var typeProperty) &&
+                        typeProperty.GetString() == "message" &&
+                        outputItem.TryGetProperty("content", out var contentArray))
                     {
-                        if (part.TryGetProperty("type", out var partTypeProperty) &&
-                            partTypeProperty.GetString() == "output_text" &&
-                            part.TryGetProperty("text", out var textProperty))
+                        foreach (var contentItem in contentArray.EnumerateArray())
                         {
-                            assistantText = textProperty.GetString()!;
-                            break;
+                            if (contentItem.TryGetProperty("type", out var contentType) &&
+                                contentType.GetString() == "output_text" &&
+                                contentItem.TryGetProperty("text", out var textProperty))
+                            {
+                                assistantText = textProperty.GetString();
+                                break;
+                            }
                         }
                     }
+                    if (assistantText != null) break;
                 }
             }
 
@@ -274,8 +273,7 @@ namespace RegistroCx.Services.Extraction
             
             var body = new
             {
-                prompt_id = ModificationParsingPromptId,
-                prompt_version = ModificationParsingPromptVersion,
+                prompt = new { id = ModificationParsingPromptId, version = ModificationParsingPromptVersion },
                 input = input
             };
 
@@ -288,29 +286,29 @@ namespace RegistroCx.Services.Extraction
             var responseBody = await response.Content.ReadAsStringAsync();
             var doc = JsonDocument.Parse(responseBody);
 
-            // Extraer la respuesta del assistant
+            // Extraer la respuesta del assistant usando formato consistente
             string? assistantText = null;
-            if (doc.RootElement.TryGetProperty("data", out var data) &&
-                data.TryGetProperty("response", out var responseObj) &&
-                responseObj.TryGetProperty("body", out var body_) &&
-                body_.TryGetProperty("choices", out var choices) &&
-                choices.GetArrayLength() > 0)
+            if (doc.RootElement.TryGetProperty("output", out var outputArray) && 
+                outputArray.ValueKind == JsonValueKind.Array)
             {
-                var firstChoice = choices[0];
-                if (firstChoice.TryGetProperty("message", out var message) &&
-                    message.TryGetProperty("content", out var contentArray) &&
-                    contentArray.ValueKind == JsonValueKind.Array)
+                foreach (var outputItem in outputArray.EnumerateArray())
                 {
-                    foreach (var part in contentArray.EnumerateArray())
+                    if (outputItem.TryGetProperty("type", out var typeProperty) &&
+                        typeProperty.GetString() == "message" &&
+                        outputItem.TryGetProperty("content", out var contentArray))
                     {
-                        if (part.TryGetProperty("type", out var partTypeProperty) &&
-                            partTypeProperty.GetString() == "output_text" &&
-                            part.TryGetProperty("text", out var textProperty))
+                        foreach (var contentItem in contentArray.EnumerateArray())
                         {
-                            assistantText = textProperty.GetString()!;
-                            break;
+                            if (contentItem.TryGetProperty("type", out var contentType) &&
+                                contentType.GetString() == "output_text" &&
+                                contentItem.TryGetProperty("text", out var textProperty))
+                            {
+                                assistantText = textProperty.GetString();
+                                break;
+                            }
                         }
                     }
+                    if (assistantText != null) break;
                 }
             }
 
@@ -337,7 +335,7 @@ namespace RegistroCx.Services.Extraction
                     id = MedicalValidationPromptId, 
                     version = MedicalValidationPromptVersion 
                 },
-                input = new { user_text = userText }
+                input = userText  // Corregido: enviar string directamente, no objeto
             };
 
             var json = JsonSerializer.Serialize(requestBody, _jsonOptions);

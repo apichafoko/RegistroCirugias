@@ -82,6 +82,9 @@ public class CirugiaFlowService
     
     // Validación de contexto médico
     private readonly MedicalContextValidator _medicalValidator;
+    
+    // Humanizador de conversaciones
+    private readonly ConversationHumanizer _conversationHumanizer;
 
     public CirugiaFlowService(
         LLMOpenAIAssistant llm, 
@@ -103,7 +106,8 @@ public class CirugiaFlowService
         IQuickEditService quickEdit,
         IConversationContextManager contextManager,
         EquipoService equipoService,
-        MedicalContextValidator medicalValidator)
+        MedicalContextValidator medicalValidator,
+        ConversationHumanizer conversationHumanizer)
     {
         _llm = llm;
         _pending = pending;
@@ -120,6 +124,7 @@ public class CirugiaFlowService
         _contextManager = contextManager;
         _equipoService = equipoService;
         _medicalValidator = medicalValidator;
+        _conversationHumanizer = conversationHumanizer;
         _stateManager = new FlowStateManager(_pending);
         _messageHandler = new FlowMessageHandler(oauthService, userRepo, calendarSync, appointmentRepo, reportService, quickEdit);
         _wizardHandler = new FlowWizardHandler(anesthesiologistSearchService, userRepo, analytics, quickEdit);
@@ -135,14 +140,7 @@ public class CirugiaFlowService
             return;
         }
         
-        // CRÍTICO: Verificar comando "cancelar" ANTES de todo
-        if (IsCancelCommand(rawText))
-        {
-            Console.WriteLine("[FLOW] 🚫 Cancel command detected, clearing context");
-            _stateManager.ClearContext(chatId);
-            await MessageSender.SendWithRetry(chatId, "❌ Operación cancelada. Podés empezar de nuevo enviando los datos de tu cirugía.", cancellationToken: ct);
-            return;
-        }
+        // ELIMINADO: Verificación hardcodeada de cancelación - ahora se maneja inteligentemente con LLM más abajo
 
         // PRIORIDAD: Verificar si QuickEditService puede manejar el texto (estados de edición)
         if (await _quickEdit.TryHandleTextInputAsync(bot, chatId, rawText, ct))
@@ -152,20 +150,61 @@ public class CirugiaFlowService
         }
 
         // INMEDIATO: Enviar mensaje de "Procesando..." para reducir ansiedad del usuario
+        // IMPORTANTE: Este mensaje da feedback inmediato - será seguido por una respuesta consolidada
         await MessageSender.SendWithRetry(chatId, "⏳ Procesando...", cancellationToken: ct);
 
-        // NUEVA LÓGICA: Verificar contexto conversacional antes de clasificar intent
+        // NUEVA LÓGICA: Verificar contexto conversacional y detectar nueva cirugía
         var appt = _stateManager.GetOrCreateAppointment(chatId);
         var currentContext = _contextManager.ExtractContext(appt);
         
-        // Si hay contexto activo, verificar relevancia del mensaje
+        // 1. PRIMERO: Verificar si es una nueva cirugía usando el LLM
+        // PERO SOLO si no hay contexto activo que esté esperando datos
+        var intent = await _llmProcessor.ClassifyIntentAsync(rawText);
+        
+        // Si hay contexto activo (esperando campo), dar prioridad al contexto sobre intent classification
+        var hasActiveContext = currentContext.Type != ContextType.None;
+        var isVeryShortMessage = rawText.Trim().Split(' ').Length <= 3;
+        
+        // Solo reiniciar si es nueva cirugía Y (no hay contexto activo O el mensaje no es muy corto)
+        // Si hay contexto activo y el mensaje es muy corto, dar prioridad al contexto
+        if (intent == MessageIntent.NewSurgery && (!hasActiveContext || !isVeryShortMessage))
+        {
+            Console.WriteLine("[FLOW] 🆕 LLM detected new surgery, clearing context and starting fresh");
+            _stateManager.ClearContext(chatId);
+            // NO enviar mensaje aquí - será manejado por el humanizador después del procesamiento
+            // Crear nuevo appointment y procesar el mensaje
+            appt = _stateManager.GetOrCreateAppointment(chatId);
+            appt.HistoricoInputs.Add(rawText);
+            await ProcessWithHumanizedResponse(bot, appt, rawText, chatId, ct, isNewSurgery: true);
+            return;
+        }
+        
+        if (intent == MessageIntent.NewSurgery && hasActiveContext && isVeryShortMessage)
+        {
+            Console.WriteLine($"[FLOW] ⚠️ Intent says NEW but we have active context and short message ('{rawText}') - treating as contextual response");
+            // Continuar con el contexto existente
+        }
+        
+        // 2. Si hay contexto activo y NO es una nueva cirugía, verificar relevancia
         if (currentContext.Type != ContextType.None)
         {
             var relevance = await _contextManager.AnalyzeMessageRelevanceAsync(rawText, currentContext, ct);
             
             if (!relevance.IsRelevant)
             {
-                // Manejar desviación de contexto
+                // Si es un cambio explícito de contexto (como nueva cirugía), procesar directamente
+                if (relevance.IsExplicitContextSwitch)
+                {
+                    Console.WriteLine("[FLOW] 🔄 Explicit context switch detected, processing as new surgery");
+                    _stateManager.ClearContext(chatId);
+                    await MessageSender.SendWithRetry(chatId, "🆕 ¡Perfecto! Nueva cirugía. Te ayudo a registrarla.", cancellationToken: ct);
+                    appt = _stateManager.GetOrCreateAppointment(chatId);
+                    appt.HistoricoInputs.Add(rawText);
+                    await _llmProcessor.ProcessWithLLM(bot, appt, rawText, chatId, ct);
+                    return;
+                }
+                
+                // Si no es explícito, manejar desviación de contexto con botonera
                 if (await _contextManager.HandleContextDeviationAsync(bot, chatId, rawText, currentContext, ct))
                 {
                     // Esperar respuesta del usuario sobre si quiere continuar o cambiar
@@ -180,25 +219,21 @@ public class CirugiaFlowService
                 return;
             }
         }
-
-        // 1. CLASIFICAR INTENT del mensaje (solo si no hay contexto activo o es cambio explícito)
-        var intent = await _llmProcessor.ClassifyIntentAsync(rawText);
         
-        // 2. Manejar intents de modificación
+        // 3. Manejar otros intents (el intent ya fue clasificado arriba)
+        
         if (intent == MessageIntent.ModifySurgery)
         {
             await HandleModificationAsync(bot, chatId, rawText, ct);
             return;
         }
         
-        // 3. Manejar intents de cancelación
         if (intent == MessageIntent.CancelSurgery)
         {
             await HandleCancellationAsync(bot, chatId, rawText, ct);
             return;
         }
         
-        // 4. Manejar intents de consulta
         if (intent == MessageIntent.QuerySurgery)
         {
             await HandleQueryAsync(bot, chatId, rawText, ct);
@@ -1541,9 +1576,9 @@ public class CirugiaFlowService
 
     private async Task HandleCancellationAsync(ITelegramBotClient bot, long chatId, string rawText, CancellationToken ct)
     {
-        await MessageSender.SendWithRetry(chatId,
-            "🚧 La funcionalidad de cancelación está en desarrollo. Por ahora podés modificar la cirugía o contactar directamente.",
-            cancellationToken: ct);
+        Console.WriteLine("[FLOW] 🚫 LLM detected cancellation intent, clearing context");
+        _stateManager.ClearContext(chatId);
+        await MessageSender.SendWithRetry(chatId, "❌ Operación cancelada. Podés empezar de nuevo enviando los datos de tu cirugía.", cancellationToken: ct);
     }
 
     private string GenerateModificationSummary(Appointment original, Appointment modified)
@@ -1650,6 +1685,12 @@ public class CirugiaFlowService
 
     // Métodos públicos para gestión
     public void ReiniciarConversacion(long chatId) => _stateManager.ClearContext(chatId);
+    
+    public Task ClearContextAsync(long chatId)
+    {
+        _stateManager.ClearContext(chatId);
+        return Task.CompletedTask;
+    }
 
     /// <summary>
     /// Maneja mensajes cuando hay un contexto conversacional activo
@@ -1844,41 +1885,199 @@ public class CirugiaFlowService
     }
 
     /// <summary>
-    /// Detecta comandos de cancelación para reiniciar el contexto
+    /// ELIMINADO: IsCancelCommand - Ahora se usa clasificación inteligente LLM (MessageIntent.CancelSurgery)
+    /// Esto evita falsos positivos como "para el 04/06" que se interpretaban incorrectamente como cancelación
     /// </summary>
-    private bool IsCancelCommand(string rawText)
-    {
-        var normalized = rawText.Trim().ToLowerInvariant();
-        
-        var cancelPatterns = new[]
-        {
-            "cancelar",
-            "cancela",
-            "cancel",
-            "salir",
-            "salí",
-            "exit",
-            "stop",
-            "para",
-            "parar",
-            "empezar de nuevo",
-            "empezar otra vez",
-            "reiniciar",
-            "restart"
-        };
-        
-        foreach (var pattern in cancelPatterns)
-        {
-            if (normalized == pattern || normalized.Contains($" {pattern} ") || normalized.StartsWith($"{pattern} ") || normalized.EndsWith($" {pattern}"))
-            {
-                Console.WriteLine($"[CANCEL-COMMAND] Found pattern: '{pattern}' in message");
-                return true;
-            }
-        }
-        
-        return false;
-    }
 
     public int ObtenerConversacionesActivas() => _stateManager.GetActiveConversationsCount();
     public void LimpiarConversacionesAntiguas(TimeSpan tiempoLimite) => _stateManager.CleanOldConversations(tiempoLimite);
+
+    /// <summary>
+    /// Procesa el mensaje con LLM y envía respuesta humanizada consolidada
+    /// </summary>
+    private async Task ProcessWithHumanizedResponse(ITelegramBotClient bot, Appointment appt, string rawText, long chatId, CancellationToken ct, bool isNewSurgery = false)
+    {
+        try
+        {
+            // 1. Procesar con LLM tradicional (sin enviar mensajes)
+            var processingResult = await ProcessWithLLMSilently(appt, rawText);
+            
+            // 2. Crear contexto para humanización
+            var humanizationContext = new HumanizationContext
+            {
+                ResponseType = DetermineResponseType(appt),
+                MissingField = appt.CampoQueFalta.ToString(),
+                ProcessedData = ExtractProcessedData(appt),
+                IsNewSurgery = isNewSurgery,
+                OriginalUserInput = rawText,
+                ConversationStage = DetermineConversationStage(appt)
+            };
+            
+            // 3. Generar respuesta humanizada
+            var humanizedResponse = await _conversationHumanizer.CreateHumanizedResponseAsync(humanizationContext, ct);
+            
+            // 4. Enviar UNA SOLA respuesta consolidada
+            await MessageSender.SendWithRetry(chatId, humanizedResponse.Message, replyMarkup: humanizedResponse.ReplyMarkup, cancellationToken: ct);
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[HUMANIZED-RESPONSE] Error: {ex}");
+            
+            // Fallback: procesar normalmente
+            await _llmProcessor.ProcessWithLLM(bot, appt, rawText, chatId, ct);
+        }
+    }
+
+    /// <summary>
+    /// Procesa con LLM sin enviar mensajes (modo silencioso)
+    /// </summary>
+    private async Task<Dictionary<string, object>> ProcessWithLLMSilently(Appointment appt, string rawText)
+    {
+        // Esta lógica debería ser similar a ProcessWithLLM pero sin enviar mensajes
+        // Por ahora, simulamos el procesamiento básico
+        var result = new Dictionary<string, object>();
+        
+        // Extraer datos usando el LLM (método existente adaptado)
+        var llmResponse = await _llm.ExtractWithPublishedPromptAsync(rawText, DateTime.Today);
+        
+        if (llmResponse != null)
+        {
+            // Aplicar los datos al appointment
+            ApplyLLMResponse(appt, llmResponse);
+            
+            // Completar fecha/hora si es necesario
+            appt.TryCompletarFechaHora();
+            
+            // Determinar qué falta
+            DetermineWhatsMissing(appt);
+        }
+        
+        return result;
+    }
+
+    /// <summary>
+    /// Aplica respuesta del LLM al appointment
+    /// </summary>
+    private void ApplyLLMResponse(Appointment appt, Dictionary<string, string> llmResponse)
+    {
+        foreach (var kvp in llmResponse)
+        {
+            switch (kvp.Key.ToLowerInvariant())
+            {
+                case "dia":
+                    if (int.TryParse(kvp.Value, out var day)) appt.DiaExtraido = day;
+                    break;
+                case "mes":
+                    if (int.TryParse(kvp.Value, out var month)) appt.MesExtraido = month;
+                    break;
+                case "anio":
+                    if (int.TryParse(kvp.Value, out var year)) appt.AnioExtraido = year;
+                    break;
+                case "hora":
+                    if (TimeSpan.TryParse(kvp.Value, out var time))
+                    {
+                        appt.HoraExtraida = time.Hours;
+                        appt.MinutoExtraido = time.Minutes;
+                    }
+                    break;
+                case "lugar":
+                    appt.Lugar = kvp.Value;
+                    break;
+                case "cirujano":
+                    appt.Cirujano = kvp.Value;
+                    break;
+                case "cirugia":
+                    appt.Cirugia = kvp.Value;
+                    break;
+                case "anestesiologo":
+                    appt.Anestesiologo = kvp.Value;
+                    break;
+                case "cantidad":
+                    if (int.TryParse(kvp.Value, out var qty)) appt.Cantidad = qty;
+                    break;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Determina qué información falta y establece el campo pendiente
+    /// </summary>
+    private void DetermineWhatsMissing(Appointment appt)
+    {
+        // Lógica similar a la existente para determinar campos faltantes
+        if (appt.FechaHora == null && (appt.DiaExtraido == null || appt.MesExtraido == null))
+        {
+            appt.CampoQueFalta = Appointment.CampoPendiente.FechaHora;
+        }
+        else if (string.IsNullOrEmpty(appt.Lugar))
+        {
+            appt.CampoQueFalta = Appointment.CampoPendiente.Lugar;
+        }
+        else if (string.IsNullOrEmpty(appt.Cirujano))
+        {
+            appt.CampoQueFalta = Appointment.CampoPendiente.Cirujano;
+        }
+        else if (string.IsNullOrEmpty(appt.Anestesiologo))
+        {
+            appt.CampoQueFalta = Appointment.CampoPendiente.Anestesiologo;
+        }
+        else
+        {
+            appt.CampoQueFalta = Appointment.CampoPendiente.Ninguno;
+            appt.ConfirmacionPendiente = true;
+        }
+    }
+
+    /// <summary>
+    /// Determina el tipo de respuesta basado en el estado del appointment
+    /// </summary>
+    private ResponseType DetermineResponseType(Appointment appt)
+    {
+        if (appt.CampoQueFalta != Appointment.CampoPendiente.Ninguno)
+        {
+            return ResponseType.SimpleFieldRequest;
+        }
+        
+        if (appt.ConfirmacionPendiente)
+        {
+            return ResponseType.Confirmation;
+        }
+        
+        return ResponseType.ComplexProcessing;
+    }
+
+    /// <summary>
+    /// Extrae datos procesados del appointment para el humanizador
+    /// </summary>
+    private Dictionary<string, object>? ExtractProcessedData(Appointment appt)
+    {
+        var data = new Dictionary<string, object>();
+        
+        if (!string.IsNullOrEmpty(appt.Cirugia))
+            data["cirugia"] = appt.Cirugia;
+            
+        if (!string.IsNullOrEmpty(appt.Cirujano))
+            data["cirujano"] = appt.Cirujano;
+            
+        if (!string.IsNullOrEmpty(appt.Lugar))
+            data["lugar"] = appt.Lugar;
+            
+        if (appt.Cantidad.HasValue)
+            data["cantidad"] = appt.Cantidad.Value;
+            
+        if (appt.FechaHora.HasValue)
+            data["fechahora"] = appt.FechaHora.Value.ToString("dd/MM/yyyy HH:mm");
+        
+        return data.Count > 0 ? data : null;
+    }
+
+    /// <summary>
+    /// Determina la etapa de la conversación
+    /// </summary>
+    private string DetermineConversationStage(Appointment appt)
+    {
+        if (appt.ConfirmacionPendiente) return "confirmation";
+        if (appt.CampoQueFalta != Appointment.CampoPendiente.Ninguno) return "field_collection";
+        return "initial_processing";
+    }
 }

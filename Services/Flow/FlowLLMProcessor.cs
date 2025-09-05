@@ -39,8 +39,9 @@ public class FlowLLMProcessor
         }
         catch
         {
-            // Si falla la clasificación, asumir nueva cirugía por defecto
-            return MessageIntent.NewSurgery;
+            // Si falla la clasificación, devolver Unknown para no asumir nueva cirugía
+            // Esto evita que respuestas contextuales se interpreten incorrectamente
+            return MessageIntent.Unknown;
         }
     }
 

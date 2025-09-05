@@ -179,6 +179,14 @@ public static class ServiceCollectionExtensions
             return new MedicalContextValidator(llm);
         });
         
+        // Conversation Humanizer
+        services.AddScoped<ConversationHumanizer>(provider =>
+        {
+            var logger = provider.GetRequiredService<ILogger<ConversationHumanizer>>();
+            var llm = provider.GetRequiredService<LLMOpenAIAssistant>();
+            return new ConversationHumanizer(logger, llm);
+        });
+        
         // Diccionarios compartidos para mantener estado entre requests
         services.AddSingleton<Dictionary<long, RegistroCx.Models.Appointment>>();
         services.AddSingleton<Dictionary<long, RegistroCx.Services.Reports.ReportService.ReportCommandState>>();
@@ -222,7 +230,8 @@ public static class ServiceCollectionExtensions
             var contextManager = provider.GetRequiredService<IConversationContextManager>();
             var equipoService = provider.GetRequiredService<EquipoService>();
             var medicalValidator = provider.GetRequiredService<MedicalContextValidator>();
-            return new CirugiaFlowService(llm, pending, confirmationService, oauthService, userRepo, calendarSync, appointmentRepo, multiSurgeryParser, reportService, anesthesiologistSearchService, learningService, searchService, modificationService, updateCoordinator, analytics, cache, quickEdit, contextManager, equipoService, medicalValidator);
+            var conversationHumanizer = provider.GetRequiredService<ConversationHumanizer>();
+            return new CirugiaFlowService(llm, pending, confirmationService, oauthService, userRepo, calendarSync, appointmentRepo, multiSurgeryParser, reportService, anesthesiologistSearchService, learningService, searchService, modificationService, updateCoordinator, analytics, cache, quickEdit, contextManager, equipoService, medicalValidator, conversationHumanizer);
         });
         services.AddScoped<AppointmentConfirmationService>(provider =>
         {
